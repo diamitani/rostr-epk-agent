@@ -1,0 +1,41 @@
+{
+  "name": "rostr-epk-agent",
+  "version": "2.0.0",
+  "description": "ROSTR EPK Agent — full-pipeline Electronic Press Kit builder. Vercel AI SDK powered, with Reveal.js, PPTX, and Presenton presentation outputs. Drop-in plugin for the ROSTR runtime.",
+  "author": "Patrick Diamitani",
+  "license": "MIT",
+  "rostr": {
+    "type": "agent-plugin",
+    "runtime": "rostr-core",
+    "agent_id": "epk-agent",
+    "npao_phase": "P",
+    "vertical": "studio",
+    "category": "Brand",
+    "price_usd": 29,
+    "subagent": "@epk-agent",
+    "mcp_endpoint": "/api/mcp",
+    "api_endpoint": "/api/epk",
+    "stream_endpoint": "/api/epk/stream"
+  },
+  "skills": [
+    "skills/format-inputs.skill.md",
+    "skills/extract-music-metadata.skill.md",
+    "skills/analyze-music-theme.skill.md",
+    "skills/extract-social-media-data.skill.md",
+    "skills/calculate-engagement-score.skill.md",
+    "skills/analyze-link-contents.skill.md",
+    "skills/create-discography.skill.md",
+    "skills/compile-data.skill.md",
+    "skills/generate-bio.skill.md",
+    "skills/generate-design-system.skill.md",
+    "skills/generate-epk.skill.md"
+  ],
+  "tools_required": [
+    "mcp__google_drive",
+    "mcp__composio",
+    "mcp__canva",
+    "mcp__vercel"
+  ],
+  "presentation_outputs": ["html", "pdf", "reveal-js", "pptx", "presenton"],
+  "source": "artispreneur-v3-enhanced"
+}

@@ -1,0 +1,38 @@
+{
+  "name": "create-an-epk",
+  "version": "2.0.0",
+  "price_usd": 29,
+  "vertical": "studio",
+  "category": "Brand",
+  "npao_phase": "P",
+  "description": "Full-pipeline Electronic Press Kit builder. Converts artist intake into master.md → discography → social score → bios → design system → EPK (HTML, PDF, Reveal.js deck, PPTX, Presenton slides) with optional Vercel deployment.",
+  "agent_id": "epk-agent",
+  "subagent": "@epk-agent",
+  "tools_required": [
+    "mcp__google_drive",
+    "mcp__composio",
+    "mcp__canva",
+    "mcp__vercel"
+  ],
+  "api": {
+    "invoke": "POST /api/epk",
+    "stream": "POST /api/epk/stream",
+    "status": "GET /api/epk/status/:id",
+    "mcp": "/api/mcp"
+  },
+  "outputs": [
+    "master.md",
+    "discography.csv",
+    "discography.md",
+    "enhanced.md",
+    "bio-long.md",
+    "bio-short.md",
+    "epk-design-system.json",
+    "epk.html",
+    "epk.pdf",
+    "epk-deck.html",
+    "epk-deck.pptx",
+    "epk-presenton.pptx"
+  ],
+  "source": "artispreneur-v3-enhanced"
+}

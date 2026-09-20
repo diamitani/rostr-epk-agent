@@ -1,0 +1,40 @@
+/* ROSTR EPK Agent — Global CSS */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --primary: #8b5cf6;
+  --primary-light: #a78bfa;
+  --primary-dim: rgba(139, 92, 246, 0.15);
+  --primary-border: rgba(139, 92, 246, 0.35);
+  --accent: #f59e0b;
+  --accent-dim: rgba(245, 158, 11, 0.15);
+  --green: #10b981;
+  --bg: #080810;
+  --surface: #0f0f1a;
+  --surface-2: #16162a;
+  --border: rgba(255, 255, 255, 0.07);
+  --text: #f0f0ff;
+  --muted: #6b7280;
+  --muted-light: #9ca3af;
+  --font-heading: 'Outfit', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--primary); color: white; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--primary-border); border-radius: 3px; }
