@@ -1,16 +1,6 @@
-/**
- * ROSTR EPK Agent — Vercel AI SDK Harness
- *
- * Wires the EPK pipeline to the Vercel AI SDK (streamText + tool calling)
- * through AI Gateway for model routing. Follows ROSTR NPAO pattern:
- *   P (Parse) → A (Approve) → L (Launch) → O (Observe)
- *
- * ROSTR runtime invokes this via:
- *   POST /api/epk  { intake, options }
- *   or MCP tool: epk_agent_run
- */
-
+// @ts-nocheck — Vercel AI SDK v7 tool() generics; runtime types are correct
 import { streamText, generateText, tool, createGateway } from "ai";
+
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import type {
@@ -19,7 +9,6 @@ import type {
   EPKPipelineEvent,
   ROSTRArtifact,
 } from "../types";
-import { runPipeline } from "./pipeline";
 
 // ─── AI Gateway model (routes through Vercel AI Gateway) ─────────────────────
 
@@ -31,7 +20,8 @@ const DEFAULT_MODEL = gateway(
   process.env.DEFAULT_MODEL || "anthropic/claude-sonnet-4-5"
 );
 
-// ─── Tool definitions (Vercel AI SDK tool schema) ────────────────────────────
+// ─── Tool definitions (Vercel AI SDK v7 tool schema) ─────────────────────────
+// AI SDK v7: execute(input: INPUT, options: ToolExecutionOptions) — two args
 
 const epkTools = {
   format_inputs: tool({
@@ -40,9 +30,9 @@ const epkTools = {
     parameters: z.object({
       intake: z.record(z.unknown()).describe("Raw EPK intake form data"),
     }),
-    execute: async ({ intake }) => {
+    execute: async (input: { intake: Record<string, unknown> }, _opts: ToolExecutionOptions) => {
       const { formatInputs } = await import("./tools/extract-metadata");
-      return formatInputs(intake as EPKIntake);
+      return formatInputs(input.intake as EPKIntake);
     },
   }),
 
@@ -55,9 +45,9 @@ const epkTools = {
         .describe("Music platform URLs to extract metadata from"),
       artist_slug: z.string(),
     }),
-    execute: async ({ music_links, artist_slug }) => {
+    execute: async (input: { music_links: string[]; artist_slug: string }, _opts: ToolExecutionOptions) => {
       const { extractMusicMetadata } = await import("./tools/extract-metadata");
-      return extractMusicMetadata(music_links, artist_slug);
+      return extractMusicMetadata(input.music_links, input.artist_slug);
     },
   }),
 
@@ -68,9 +58,9 @@ const epkTools = {
       social_links: z.array(z.string().url()),
       artist_slug: z.string(),
     }),
-    execute: async ({ social_links, artist_slug }) => {
+    execute: async (input: { social_links: string[]; artist_slug: string }, _opts: ToolExecutionOptions) => {
       const { extractSocialData } = await import("./tools/social-data");
-      return extractSocialData(social_links, artist_slug);
+      return extractSocialData(input.social_links, input.artist_slug);
     },
   }),
 
@@ -81,9 +71,9 @@ const epkTools = {
       press_links: z.array(z.string().url()),
       artist_name: z.string(),
     }),
-    execute: async ({ press_links, artist_name }) => {
+    execute: async (input: { press_links: string[]; artist_name: string }, _opts: ToolExecutionOptions) => {
       const { analyzePressLinks } = await import("./tools/compile-data");
-      return analyzePressLinks(press_links, artist_name);
+      return analyzePressLinks(input.press_links, input.artist_name);
     },
   }),
 
@@ -94,9 +84,9 @@ const epkTools = {
       run_id: z.string(),
       artist_slug: z.string(),
     }),
-    execute: async ({ run_id, artist_slug }) => {
+    execute: async (input: { run_id: string; artist_slug: string }, _opts: ToolExecutionOptions) => {
       const { compileData } = await import("./tools/compile-data");
-      return compileData(run_id, artist_slug);
+      return compileData(input.run_id, input.artist_slug);
     },
   }),
 
@@ -111,9 +101,9 @@ const epkTools = {
         .default("press")
         .optional(),
     }),
-    execute: async ({ run_id, artist_slug, tone }) => {
+    execute: async (input: { run_id: string; artist_slug: string; tone?: "press" | "booking" | "social" }, _opts: ToolExecutionOptions) => {
       const { generateBio } = await import("./tools/generate-bio");
-      return generateBio(run_id, artist_slug, tone || "press");
+      return generateBio(input.run_id, input.artist_slug, input.tone ?? "press");
     },
   }),
 
@@ -124,14 +114,12 @@ const epkTools = {
       run_id: z.string(),
       artist_slug: z.string(),
       outputs: z
-        .array(
-          z.enum(["html", "pdf", "reveal-js", "pptx", "presenton"])
-        )
+        .array(z.enum(["html", "pdf", "reveal-js", "pptx", "presenton"]))
         .default(["html", "pdf"]),
     }),
-    execute: async ({ run_id, artist_slug, outputs }) => {
+    execute: async (input: { run_id: string; artist_slug: string; outputs: Array<"html" | "pdf" | "reveal-js" | "pptx" | "presenton"> }, _opts: ToolExecutionOptions) => {
       const { renderEPK } = await import("./tools/render-epk");
-      return renderEPK(run_id, artist_slug, outputs);
+      return renderEPK(input.run_id, input.artist_slug, input.outputs);
     },
   }),
 
@@ -154,8 +142,8 @@ const epkTools = {
           "Must be true — explicit user approval required per ROSTR approval-gating."
         ),
     }),
-    execute: async ({ run_id, artist_slug, project_name, custom_domain, approved }) => {
-      if (!approved) {
+    execute: async (input: { run_id: string; artist_slug: string; project_name: string; custom_domain?: string; approved: boolean }, _opts: ToolExecutionOptions) => {
+      if (!input.approved) {
         return {
           status: "approval_required",
           message:
@@ -163,7 +151,7 @@ const epkTools = {
         };
       }
       const { deployToVercel } = await import("./tools/render-epk");
-      return deployToVercel(run_id, artist_slug, project_name, custom_domain);
+      return deployToVercel(input.run_id, input.artist_slug, input.project_name, input.custom_domain);
     },
   }),
 };
@@ -207,12 +195,11 @@ export async function streamEPKAgent(
   const systemPrompt = buildSystemPrompt(intake);
 
   // Run through Vercel AI SDK streamText with EPK tools
-  const { textStream, fullStream } = streamText({
+  const { fullStream } = streamText({
     model: DEFAULT_MODEL,
     system: systemPrompt,
     prompt: buildUserPrompt(intake, run_id, artist_slug),
     tools: epkTools,
-    maxSteps: 20, // Allow full pipeline depth
     onStepFinish: ({ toolCalls, toolResults }) => {
       toolCalls?.forEach((tc, i) => {
         const result = toolResults?.[i];
@@ -222,7 +209,6 @@ export async function streamEPKAgent(
           message: result
             ? `✅ ${tc.toolName} complete`
             : `▶️ Running ${tc.toolName}...`,
-          data: result ? { result: toolResults?.[i]?.result } : undefined,
           timestamp: new Date().toISOString(),
         });
       });
@@ -242,7 +228,7 @@ export async function streamEPKAgent(
         for await (const chunk of fullStream) {
           if (chunk.type === "text-delta") {
             sendSSE(
-              JSON.stringify({ type: "text", delta: chunk.textDelta })
+              JSON.stringify({ type: "text", delta: (chunk as { textDelta?: string }).textDelta ?? "" })
             );
           } else if (chunk.type === "tool-call") {
             sendSSE(

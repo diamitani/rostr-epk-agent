@@ -245,18 +245,16 @@ async function generatePDFViaSandbox(
     const { Sandbox } = await import("@vercel/sandbox");
     const sandbox = await Sandbox.create();
 
-    await sandbox.files.write(
-      "/tmp/epk.html",
-      buildEPKHtml(artistSlug, runId)
-    );
-    await sandbox.commands.run(
-      "cd /tmp && npx puppeteer-cli print epk.html epk.pdf --format A4"
-    );
+    const htmlContent = buildEPKHtml(artistSlug, runId);
+    await sandbox.fs.writeFile("/tmp/epk.html", htmlContent);
 
-    const pdfBytes = await sandbox.files.read("/tmp/epk.pdf");
-    await sandbox.kill();
+    const cmd = await sandbox.runCommand("npx puppeteer-cli print /tmp/epk.html /tmp/epk.pdf --format A4");
+    await cmd.wait();
 
-    return { content: `[PDF generated: ${pdfBytes.length} bytes]` };
+    const pdfBuffer = await sandbox.fs.readFile("/tmp/epk.pdf");
+    await sandbox.stop();
+
+    return { content: `[PDF generated: ${pdfBuffer ? "ok" : "failed"}]` };
   } catch {
     // Sandbox not available — return PDF generation instructions
     return {
