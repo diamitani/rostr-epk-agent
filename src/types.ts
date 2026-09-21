@@ -156,6 +156,30 @@ export interface PresentationSpec {
   slides: SlideContent[];
 }
 
+/** Assembled, ready-to-render content for one EPK — built by render-epk.ts from
+ * whatever the earlier pipeline steps actually produced for this run, so every
+ * output format (HTML, PDF, Reveal.js, PPTX) renders the same real content
+ * instead of each format inventing its own placeholder text. */
+export interface EpkContent {
+  artistName: string;
+  genre: string;
+  templateKey: string;
+  bioLong: string;
+  bioShort: string;
+  discographyLines: string[];
+  socialLines: string[];
+  engagementScore?: number;
+  engagementTier?: string;
+  pressLines: string[];
+  contact: {
+    manager?: string;
+    booking_email?: string;
+    website?: string;
+  };
+  tokens: DesignTokens;
+  sections: string[];
+}
+
 export interface DesignTokens {
   primary_color: string;
   accent_color: string;

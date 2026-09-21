@@ -4,61 +4,63 @@
  * using Reveal.js v5 (CDN — no build step required).
  */
 
-import type { SlideContent, PresentationSpec } from "../types";
+import type { SlideContent, EpkContent } from "../types";
 
 export async function buildRevealJSDeck(
   artistSlug: string,
   runId: string,
-  spec?: Partial<PresentationSpec>
+  content: EpkContent
 ): Promise<string> {
   const slides: SlideContent[] = [
     {
       type: "cover",
-      title: artistSlug.replace(/-/g, " ").toUpperCase(),
-      subtitle: spec?.slides?.[0]?.subtitle || "Electronic Press Kit",
+      title: content.artistName.toUpperCase(),
+      subtitle: content.genre || "Electronic Press Kit",
     },
     {
       type: "bio",
       title: "Artist Bio",
-      body: "[Long bio from bio-long.md]",
+      body: content.bioShort || content.bioLong || "Bio not yet generated for this run.",
     },
     {
       type: "discography",
       title: "Discography",
-      body: "[Track catalog from discography.md]",
+      body: content.discographyLines.length
+        ? content.discographyLines.join(" · ")
+        : "No discography links were provided for this run.",
     },
     {
       type: "social",
       title: "Social Reach",
-      stat_label: "Engagement Score",
-      stat_value: "[score from engagement-score.md]",
+      stat_label: content.engagementTier ? `Tier: ${content.engagementTier}` : "Engagement Score",
+      stat_value: content.engagementScore != null ? String(content.engagementScore) : "—",
     },
     {
       type: "press",
       title: "Press Coverage",
-      bullets: ["[Press item 1]", "[Press item 2]", "[Press item 3]"],
+      bullets: content.pressLines.length ? content.pressLines : ["No press links were provided for this run."],
     },
     {
       type: "contact",
       title: "Contact & Booking",
-      body: "[Contact info from master.md]",
+      body:
+        [content.contact.booking_email, content.contact.manager, content.contact.website]
+          .filter(Boolean)
+          .join(" · ") || "No public contact info was approved for release.",
     },
   ];
 
-  return generateRevealHTML(artistSlug, slides, spec);
+  return generateRevealHTML(content, slides);
 }
 
-function generateRevealHTML(
-  artistSlug: string,
-  slides: SlideContent[],
-  spec?: Partial<PresentationSpec>
-): string {
-  const primary = spec?.theme?.primary_color || "#8b5cf6";
-  const accent = spec?.theme?.accent_color || "#f59e0b";
-  const bg = spec?.theme?.background_color || "#0a0a0f";
-  const text = spec?.theme?.text_color || "#f8f8ff";
-  const fontHeading = spec?.theme?.font_heading || "Outfit";
-  const fontBody = spec?.theme?.font_body || "Inter";
+function generateRevealHTML(content: EpkContent, slides: SlideContent[]): string {
+  const primary = content.tokens.primary_color;
+  const accent = content.tokens.accent_color;
+  const bg = content.tokens.background_color;
+  const text = content.tokens.text_color;
+  const fontHeading = content.tokens.font_heading;
+  const fontBody = content.tokens.font_body;
+  const artistSlug = content.artistName;
 
   const slidesHTML = slides.map((s) => generateSlide(s, primary, accent)).join("\n");
 
@@ -188,51 +190,56 @@ function generateSlide(
   primary: string,
   accent: string
 ): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const title = esc(slide.title);
+  const body = esc(slide.body || "");
+
   switch (slide.type) {
     case "cover":
       return `<section class="cover-slide" data-transition="zoom">
   <div class="badge">Electronic Press Kit</div>
-  <h1>${slide.title}</h1>
-  ${slide.subtitle ? `<p style="font-size:1.3rem;margin-top:1rem;color:rgba(255,255,255,0.5)">${slide.subtitle}</p>` : ""}
+  <h1>${title}</h1>
+  ${slide.subtitle ? `<p style="font-size:1.3rem;margin-top:1rem;color:rgba(255,255,255,0.5)">${esc(slide.subtitle)}</p>` : ""}
 </section>`;
 
     case "bio":
       return `<section data-transition="slide">
-  <h2>${slide.title}</h2>
-  <p style="max-width:700px">${slide.body || ""}</p>
+  <h2>${title}</h2>
+  <p style="max-width:700px">${body}</p>
 </section>`;
 
     case "discography":
       return `<section data-transition="slide">
-  <h2>${slide.title}</h2>
-  <p>${slide.body || ""}</p>
+  <h2>${title}</h2>
+  <p>${body}</p>
 </section>`;
 
     case "social":
       return `<section data-transition="slide">
-  <h2>${slide.title}</h2>
+  <h2>${title}</h2>
   <div class="stat-box">
-    <div class="stat-value">${slide.stat_value || "—"}</div>
-    <div class="stat-label">${slide.stat_label || ""}</div>
+    <div class="stat-value">${esc(slide.stat_value || "—")}</div>
+    <div class="stat-label">${esc(slide.stat_label || "")}</div>
   </div>
 </section>`;
 
     case "press":
       return `<section data-transition="slide">
-  <h2>${slide.title}</h2>
+  <h2>${title}</h2>
   <ul>
-    ${(slide.bullets || []).map((b) => `<li>✦ ${b}</li>`).join("\n    ")}
+    ${(slide.bullets || []).map((b) => `<li>✦ ${esc(b)}</li>`).join("\n    ")}
   </ul>
 </section>`;
 
     case "contact":
     case "cta":
       return `<section data-transition="fade" style="background:radial-gradient(ellipse at 50% 100%, rgba(139,92,246,0.3) 0%, transparent 70%)">
-  <h2>${slide.title}</h2>
-  <p>${slide.body || ""}</p>
+  <h2>${title}</h2>
+  <p>${body}</p>
 </section>`;
 
     default:
-      return `<section><h2>${slide.title}</h2><p>${slide.body || ""}</p></section>`;
+      return `<section><h2>${title}</h2><p>${body}</p></section>`;
   }
 }

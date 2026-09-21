@@ -24,3 +24,11 @@ Brand).
 **Guardrails:** Never invent a brand color/font not evidenced by supplied assets — fall back to the
 template default and note the assumption. Section order/required sections come from the template spec and
 are not user-overridable without an explicit request.
+
+**Implementation note:** the per-template palette registry (a named set of curated palettes per template,
+selected rather than hand-coded per run) and the explicit `sections` layout list per template
+(`src/agent/tools/generate-design-system.ts`) are a "theme-as-configuration" pattern evaluated against two
+open-source presentation generators — [Presenton](https://github.com/presenton/presenton) (`layouts.json`
+per-template layout mapping) and [ALLWEONE presentation-ai](https://github.com/allweonedev/presentation-ai)
+(its 38-entry theme registry, decoupled from content generation). Neither is a runtime dependency of this
+skill — only the pattern was adopted and right-sized to the EPK domain's five templates.

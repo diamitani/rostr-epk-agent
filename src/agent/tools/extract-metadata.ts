@@ -149,7 +149,7 @@ export async function extractMusicMetadata(
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-interface TrackMetadata {
+export interface TrackMetadata {
   source_url: string;
   title: string;
   artist: string;

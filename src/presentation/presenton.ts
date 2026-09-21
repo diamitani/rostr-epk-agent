@@ -16,6 +16,8 @@
  *   docker run -p 8080:8080 -e OLLAMA_BASE_URL=http://host.docker.internal:11434 presenton/presenton
  */
 
+import type { EpkContent } from "../types";
+
 export interface PresentonResult {
   content: string;
   download_url?: string;
@@ -33,9 +35,45 @@ export interface PresentonSetupInstructions {
   repo: string;
 }
 
+/**
+ * Builds the per-slide markdown Presenton's own `slides_markdown` input expects
+ * (see github.com/presenton/presenton — passing this array skips Presenton's own
+ * outline-generation LLM call and rephrase step, since our pipeline already
+ * compiled real, sourced content; Presenton still selects/renders layouts from
+ * its `layouts.json` template set).
+ */
+function buildSlidesMarkdown(content: EpkContent): string[] {
+  const slides = [
+    `# ${content.artistName}\n\n${content.genre}`,
+    `## Bio\n\n${content.bioShort || content.bioLong || "Bio not yet generated for this run."}`,
+    `## Discography\n\n${
+      content.discographyLines.length
+        ? content.discographyLines.map((l) => `- ${l}`).join("\n")
+        : "No discography links were provided for this run."
+    }`,
+    `## Social Reach\n\n${
+      content.socialLines.length
+        ? content.socialLines.map((l) => `- ${l}`).join("\n")
+        : "No social links were provided for this run."
+    }${content.engagementScore != null ? `\n\n**Engagement score:** ${content.engagementScore}/100 (${content.engagementTier})` : ""}`,
+    `## Press Coverage\n\n${
+      content.pressLines.length
+        ? content.pressLines.map((l) => `- ${l}`).join("\n")
+        : "No press links were provided for this run."
+    }`,
+    `## Contact\n\n${
+      [content.contact.booking_email, content.contact.manager, content.contact.website]
+        .filter(Boolean)
+        .join("  ·  ") || "No public contact info was approved for release."
+    }`,
+  ];
+  return slides;
+}
+
 export async function buildPresentonSlides(
   artistSlug: string,
-  runId: string
+  runId: string,
+  content: EpkContent
 ): Promise<PresentonResult> {
   const PRESENTON_URL = process.env.PRESENTON_API_URL;
   const PRESENTON_KEY = process.env.PRESENTON_API_KEY;
@@ -50,6 +88,8 @@ export async function buildPresentonSlides(
 
   try {
     // ── Step 1: Generate presentation via Presenton REST API ─────────────────
+    // slides_markdown carries our already-compiled, sourced content — Presenton
+    // maps it to layouts/theme rather than inventing its own outline from a topic.
     const generateRes = await fetch(`${PRESENTON_URL}/api/v1/presentations`, {
       method: "POST",
       headers: {
@@ -57,11 +97,10 @@ export async function buildPresentonSlides(
         ...(PRESENTON_KEY ? { Authorization: `Bearer ${PRESENTON_KEY}` } : {}),
       },
       body: JSON.stringify({
-        topic: buildPresentationTopic(artistSlug),
-        n_slides: 8,
+        slides_markdown: buildSlidesMarkdown(content),
+        n_slides: 6,
         theme: "dark",
         language: "en",
-        extra_info: buildExtraInfo(artistSlug, runId),
       }),
       signal: AbortSignal.timeout(60000), // Presenton can take 30-60s
     });
@@ -111,7 +150,8 @@ export async function buildPresentonSlides(
 
 export async function invokePresentonMCP(
   artistSlug: string,
-  runId: string
+  runId: string,
+  content: EpkContent
 ): Promise<PresentonResult> {
   // When the ROSTR runtime has Presenton's MCP server connected,
   // this is the preferred invocation path.
@@ -129,31 +169,7 @@ export async function invokePresentonMCP(
   // }
 
   // Fallback to REST API if MCP not available
-  return buildPresentonSlides(artistSlug, runId);
-}
-
-function buildPresentationTopic(artistSlug: string): string {
-  return `Electronic Press Kit for music artist: ${artistSlug.replace(/-/g, " ")}. Create a professional EPK presentation for music industry professionals including talent buyers, promoters, and press.`;
-}
-
-function buildExtraInfo(artistSlug: string, runId: string): string {
-  return `
-Artist: ${artistSlug.replace(/-/g, " ")}
-Run ID: ${runId}
-
-Slide structure:
-1. Cover — Artist name, genre badge
-2. Artist Biography — Narrative overview
-3. Discography — Key releases and catalog highlights
-4. Social Analytics — Follower counts, engagement score
-5. Press Coverage — Notable features and reviews
-6. Live Performance — Tour history and notable venues
-7. Contact & Booking — Manager info, booking email
-8. Call to Action — Next steps for industry professionals
-
-Style: Dark, premium, music industry aesthetic. Clean typography, minimal text per slide.
-Do NOT fabricate statistics, press quotes, or streaming numbers. Use placeholder brackets for unknown data.
-  `.trim();
+  return buildPresentonSlides(artistSlug, runId, content);
 }
 
 function buildSetupInstructions(): PresentonSetupInstructions {

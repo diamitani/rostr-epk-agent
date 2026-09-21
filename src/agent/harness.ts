@@ -9,6 +9,7 @@ import type {
   EPKPipelineEvent,
   ROSTRArtifact,
 } from "../types";
+import { RunStore } from "./store";
 
 // ─── AI Gateway model (routes through Vercel AI Gateway) ─────────────────────
 
@@ -23,138 +24,187 @@ const DEFAULT_MODEL = gateway(
 // ─── Tool definitions (Vercel AI SDK v7 tool schema) ─────────────────────────
 // AI SDK v7: execute(input: INPUT, options: ToolExecutionOptions) — two args
 
-const epkTools = {
-  format_inputs: tool({
-    description:
-      "Compile raw EPK intake answers into a structured master.md artifact. Always the first skill to run.",
-    parameters: z.object({
-      intake: z.record(z.unknown()).describe("Raw EPK intake form data"),
-    }),
-    execute: async (input: { intake: Record<string, unknown> }, _opts: ToolExecutionOptions) => {
-      const { formatInputs } = await import("./tools/extract-metadata");
-      return formatInputs(input.intake as EPKIntake);
-    },
-  }),
+/**
+ * buildEpkTools — one RunStore per pipeline run, closed over by every tool's
+ * execute() below. This is what lets compile_data/generate_bio/render_epk
+ * actually see what format_inputs / extract_music_metadata / extract_social_data
+ * / analyze_press_links / generate_design_system produced
+ * earlier in the SAME run, instead of each tool call being an island whose
+ * result only the LLM's transcript ever saw. ctx.intake/ctx.runId/ctx.artistSlug
+ * are the authoritative values (set once from the actual API/MCP call) — tool
+ * parameters that duplicate them (e.g. `artist_slug` on extract_music_metadata)
+ * are accepted for prompt-compatibility but the trusted ctx values are what
+ * get stored, so a model mistake in one arg can't desync the run.
+ */
+function buildEpkTools(ctx: { runId: string; artistSlug: string; intake: EPKIntake; store: RunStore }) {
+  const { runId, artistSlug, intake, store } = ctx;
+  store.setData("intake", intake);
 
-  extract_music_metadata: tool({
-    description:
-      "Extract track metadata (ISRC, BPM, key, duration, release date) from Spotify, Apple Music, SoundCloud, YouTube, Pandora, Suno links.",
-    parameters: z.object({
-      music_links: z
-        .array(z.string().url())
-        .describe("Music platform URLs to extract metadata from"),
-      artist_slug: z.string(),
+  return {
+    format_inputs: tool({
+      description:
+        "Compile raw EPK intake answers into a structured master.md artifact. Always the first skill to run.",
+      parameters: z.object({
+        intake: z.record(z.unknown()).describe("Raw EPK intake form data"),
+      }),
+      execute: async (_input: { intake: Record<string, unknown> }, _opts: ToolExecutionOptions) => {
+        const { formatInputs } = await import("./tools/extract-metadata");
+        const result = await formatInputs(intake);
+        store.setArtifact("master.md", result.artifact);
+        return result;
+      },
     }),
-    execute: async (input: { music_links: string[]; artist_slug: string }, _opts: ToolExecutionOptions) => {
-      const { extractMusicMetadata } = await import("./tools/extract-metadata");
-      return extractMusicMetadata(input.music_links, input.artist_slug);
-    },
-  }),
 
-  extract_social_data: tool({
-    description:
-      "Pull follower counts, post engagement, and reach from Instagram, TikTok, YouTube, X, Facebook profiles.",
-    parameters: z.object({
-      social_links: z.array(z.string().url()),
-      artist_slug: z.string(),
+    extract_music_metadata: tool({
+      description:
+        "Extract track metadata (ISRC, BPM, key, duration, release date) from Spotify, Apple Music, SoundCloud, YouTube, Pandora, Suno links.",
+      parameters: z.object({
+        music_links: z
+          .array(z.string().url())
+          .describe("Music platform URLs to extract metadata from"),
+        artist_slug: z.string(),
+      }),
+      execute: async (input: { music_links: string[]; artist_slug: string }, _opts: ToolExecutionOptions) => {
+        const { extractMusicMetadata } = await import("./tools/extract-metadata");
+        const result = await extractMusicMetadata(input.music_links, artistSlug);
+        store.setArtifact("discography-raw", result.artifact);
+        store.setData("tracks", result.tracks);
+        return result;
+      },
     }),
-    execute: async (input: { social_links: string[]; artist_slug: string }, _opts: ToolExecutionOptions) => {
-      const { extractSocialData } = await import("./tools/social-data");
-      return extractSocialData(input.social_links, input.artist_slug);
-    },
-  }),
 
-  analyze_press_links: tool({
-    description:
-      "Fetch and summarize press articles, features, interviews linked in the EPK intake.",
-    parameters: z.object({
-      press_links: z.array(z.string().url()),
-      artist_name: z.string(),
+    extract_social_data: tool({
+      description:
+        "Pull follower counts, post engagement, and reach from Instagram, TikTok, YouTube, X, Facebook profiles.",
+      parameters: z.object({
+        social_links: z.array(z.string().url()),
+        artist_slug: z.string(),
+      }),
+      execute: async (input: { social_links: string[]; artist_slug: string }, _opts: ToolExecutionOptions) => {
+        const { extractSocialData } = await import("./tools/social-data");
+        const result = await extractSocialData(input.social_links, artistSlug);
+        store.setArtifact("social-media-raw", result.artifact);
+        store.setData("profiles", result.profiles);
+        store.setData("engagement", result.engagement);
+        return result;
+      },
     }),
-    execute: async (input: { press_links: string[]; artist_name: string }, _opts: ToolExecutionOptions) => {
-      const { analyzePressLinks } = await import("./tools/compile-data");
-      return analyzePressLinks(input.press_links, input.artist_name);
-    },
-  }),
 
-  compile_data: tool({
-    description:
-      "Merge master.md, discography, social data, engagement score, press summaries, contacts, and design tokens into enhanced.md.",
-    parameters: z.object({
-      run_id: z.string(),
-      artist_slug: z.string(),
+    analyze_press_links: tool({
+      description:
+        "Fetch and summarize press articles, features, interviews linked in the EPK intake.",
+      parameters: z.object({
+        press_links: z.array(z.string().url()),
+        artist_name: z.string(),
+      }),
+      execute: async (input: { press_links: string[]; artist_name: string }, _opts: ToolExecutionOptions) => {
+        const { analyzePressLinks } = await import("./tools/compile-data");
+        const result = await analyzePressLinks(input.press_links, intake.artist_name);
+        store.setArtifact("press-link-summary", result.artifact);
+        store.setData("press_summaries", result.summaries);
+        return result;
+      },
     }),
-    execute: async (input: { run_id: string; artist_slug: string }, _opts: ToolExecutionOptions) => {
-      const { compileData } = await import("./tools/compile-data");
-      return compileData(input.run_id, input.artist_slug);
-    },
-  }),
 
-  generate_bio: tool({
-    description:
-      "Generate long-form (400w) and short-form (150w) artist bios from master.md and enhanced.md. Never fabricates facts.",
-    parameters: z.object({
-      run_id: z.string(),
-      artist_slug: z.string(),
-      tone: z
-        .enum(["press", "booking", "social"])
-        .default("press")
-        .optional(),
+    generate_design_system: tool({
+      description:
+        "Resolve the EPK design system (palette, type, section order) for the selected template. Run any time after intake is known — compile_data and render_epk both depend on it.",
+      parameters: z.object({}),
+      execute: async (_input: Record<string, never>, _opts: ToolExecutionOptions) => {
+        const { generateDesignSystem } = await import("./tools/generate-design-system");
+        const result = await generateDesignSystem(intake);
+        store.setArtifact("epk-design-system.json", result.artifact);
+        store.setData("tokens", result.tokens);
+        store.setData("sections", result.sections);
+        store.setData("templateKey", result.templateKey);
+        return result;
+      },
     }),
-    execute: async (input: { run_id: string; artist_slug: string; tone?: "press" | "booking" | "social" }, _opts: ToolExecutionOptions) => {
-      const { generateBio } = await import("./tools/generate-bio");
-      return generateBio(input.run_id, input.artist_slug, input.tone ?? "press");
-    },
-  }),
 
-  render_epk: tool({
-    description:
-      "Render final EPK as HTML, PDF, Reveal.js deck, PPTX, and/or Presenton AI slides from enhanced.md and design tokens.",
-    parameters: z.object({
-      run_id: z.string(),
-      artist_slug: z.string(),
-      outputs: z
-        .array(z.enum(["html", "pdf", "reveal-js", "pptx", "presenton"]))
-        .default(["html", "pdf"]),
+    compile_data: tool({
+      description:
+        "Merge master.md, discography, social data, engagement score, and press summaries into enhanced.md. Run after format_inputs and whichever of extract_music_metadata/extract_social_data/analyze_press_links were used.",
+      parameters: z.object({
+        run_id: z.string(),
+        artist_slug: z.string(),
+      }),
+      execute: async (_input: { run_id: string; artist_slug: string }, _opts: ToolExecutionOptions) => {
+        const { compileData } = await import("./tools/compile-data");
+        const result = await compileData(runId, artistSlug, store);
+        store.setArtifact("enhanced.md", result.artifact);
+        return result;
+      },
     }),
-    execute: async (input: { run_id: string; artist_slug: string; outputs: Array<"html" | "pdf" | "reveal-js" | "pptx" | "presenton"> }, _opts: ToolExecutionOptions) => {
-      const { renderEPK } = await import("./tools/render-epk");
-      return renderEPK(input.run_id, input.artist_slug, input.outputs);
-    },
-  }),
 
-  deploy_to_vercel: tool({
-    description:
-      "Deploy the EPK HTML to Vercel as a live web app. Requires explicit approval. Also provides setup instructions for users who need to create a Vercel account.",
-    parameters: z.object({
-      run_id: z.string(),
-      artist_slug: z.string(),
-      project_name: z.string(),
-      custom_domain: z
-        .string()
-        .optional()
-        .describe(
-          "Optional custom domain (e.g. myartist.com). If not set, uses Vercel subdomain."
-        ),
-      approved: z
-        .boolean()
-        .describe(
-          "Must be true — explicit user approval required per ROSTR approval-gating."
-        ),
+    generate_bio: tool({
+      description:
+        "Generate long-form (400w) and short-form (150w) artist bios from master.md and enhanced.md. Never fabricates facts. Run compile_data first.",
+      parameters: z.object({
+        run_id: z.string(),
+        artist_slug: z.string(),
+        tone: z
+          .enum(["press", "booking", "social"])
+          .default("press")
+          .optional(),
+      }),
+      execute: async (input: { run_id: string; artist_slug: string; tone?: "press" | "booking" | "social" }, _opts: ToolExecutionOptions) => {
+        const { generateBio } = await import("./tools/generate-bio");
+        const result = await generateBio(runId, artistSlug, input.tone ?? "press", store);
+        store.setArtifact("bio-long.md", result.bio_long);
+        store.setArtifact("bio-short.md", result.bio_short);
+        return result;
+      },
     }),
-    execute: async (input: { run_id: string; artist_slug: string; project_name: string; custom_domain?: string; approved: boolean }, _opts: ToolExecutionOptions) => {
-      if (!input.approved) {
-        return {
-          status: "approval_required",
-          message:
-            "Vercel production deploy requires explicit approval. Set approved: true to confirm.",
-        };
-      }
-      const { deployToVercel } = await import("./tools/render-epk");
-      return deployToVercel(input.run_id, input.artist_slug, input.project_name, input.custom_domain);
-    },
-  }),
-};
+
+    render_epk: tool({
+      description:
+        "Render final EPK as HTML, PDF, Reveal.js deck, PPTX, and/or Presenton AI slides. Run generate_bio and generate_design_system first — this pulls their real output from the run's artifact store.",
+      parameters: z.object({
+        run_id: z.string(),
+        artist_slug: z.string(),
+        outputs: z
+          .array(z.enum(["html", "pdf", "reveal-js", "pptx", "presenton"]))
+          .default(["html", "pdf"]),
+      }),
+      execute: async (input: { run_id: string; artist_slug: string; outputs: Array<"html" | "pdf" | "reveal-js" | "pptx" | "presenton"> }, _opts: ToolExecutionOptions) => {
+        const { renderEPK } = await import("./tools/render-epk");
+        return renderEPK(runId, artistSlug, input.outputs, store);
+      },
+    }),
+
+    deploy_to_vercel: tool({
+      description:
+        "Deploy the EPK HTML to Vercel as a live web app. Requires explicit approval. Also provides setup instructions for users who need to create a Vercel account.",
+      parameters: z.object({
+        run_id: z.string(),
+        artist_slug: z.string(),
+        project_name: z.string(),
+        custom_domain: z
+          .string()
+          .optional()
+          .describe(
+            "Optional custom domain (e.g. myartist.com). If not set, uses Vercel subdomain."
+          ),
+        approved: z
+          .boolean()
+          .describe(
+            "Must be true — explicit user approval required per ROSTR approval-gating."
+          ),
+      }),
+      execute: async (input: { run_id: string; artist_slug: string; project_name: string; custom_domain?: string; approved: boolean }, _opts: ToolExecutionOptions) => {
+        if (!input.approved) {
+          return {
+            status: "approval_required",
+            message:
+              "Vercel production deploy requires explicit approval. Set approved: true to confirm.",
+          };
+        }
+        const { deployToVercel } = await import("./tools/render-epk");
+        return deployToVercel(runId, artistSlug, input.project_name, input.custom_domain, store);
+      },
+    }),
+  };
+}
 
 // ─── ROSTR-compatible agent harness ──────────────────────────────────────────
 
@@ -193,6 +243,12 @@ export async function streamEPKAgent(
 
   // Build the system prompt from soul.md conventions
   const systemPrompt = buildSystemPrompt(intake);
+
+  // One store per run — closed over by every tool below, so later steps
+  // (compile_data, generate_bio, render_epk) can read what earlier steps in
+  // THIS run actually produced instead of starting from nothing.
+  const store = new RunStore();
+  const epkTools = buildEpkTools({ runId: run_id, artistSlug: artist_slug, intake, store });
 
   // Run through Vercel AI SDK streamText with EPK tools
   const { fullStream } = streamText({
@@ -292,10 +348,11 @@ You are the best in the world at transforming an artist's raw submission into a 
 
 ## Pipeline order (execute tools in this sequence)
 1. format_inputs → master.md
-2. In parallel: extract_music_metadata + extract_social_data + analyze_press_links
-3. compile_data → enhanced.md
-4. generate_bio → bio-long.md + bio-short.md
-5. render_epk → html + pdf + reveal-js + pptx + presenton
+2. In parallel: extract_music_metadata + extract_social_data + analyze_press_links + generate_design_system
+   (generate_design_system only needs the template/genre from intake, so it does not depend on the others)
+3. compile_data → enhanced.md (depends on format_inputs and whichever extractors ran)
+4. generate_bio → bio-long.md + bio-short.md (depends on compile_data)
+5. render_epk → html + pdf + reveal-js + pptx + presenton (depends on generate_bio and generate_design_system)
 6. deploy_to_vercel (only if user requested, with approval)
 
 ## Artist context

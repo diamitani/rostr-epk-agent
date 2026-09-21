@@ -180,11 +180,19 @@ export function createMCPServer(): McpServer {
       }
 
       const { deployToVercel } = await import("../agent/tools/render-epk");
+      const { RunStore } = await import("../agent/store");
+      // NOTE: this MCP tool is a standalone call — it does not share the
+      // RunStore of the original epk_run invocation (each is a separate
+      // process/request), so it can only deploy generic placeholder content
+      // unless/until run artifacts are persisted somewhere this call can read
+      // (see saveSession in agent/pal.ts). Prefer render_epk's own deploy path
+      // within the same run when possible.
       const result = await deployToVercel(
         run_id,
         project_name.toLowerCase().replace(/\s+/g, "-"),
         project_name,
-        custom_domain
+        custom_domain,
+        new RunStore()
       );
 
       return {

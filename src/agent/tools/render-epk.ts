@@ -9,21 +9,85 @@
  *   - epk-deck.pptx              → src/presentation/pptxgenjs.ts
  *   - epk-presenton.pptx         → src/presentation/presenton.ts
  *   - Vercel deploy URL          → Vercel API
+ *
+ * All renderers below take an assembled EpkContent (see src/types.ts), built by
+ * assembleEpkContent() from whatever this run's earlier steps actually stored.
+ * Previously this file generated a decorative HTML/deck/PPTX shell that never
+ * received the compiled bio/discography/social data at all — every section was
+ * a literal bracketed placeholder string regardless of what the pipeline found.
  */
 
 import type {
   ROSTRArtifact,
   PresentationOutputType,
   VercelDeployResult,
+  EpkContent,
+  EPKIntake,
+  DesignTokens,
 } from "../../types";
+import type { RunStore } from "../store";
+import { bodyOf } from "../store";
+import type { TrackMetadata } from "./extract-metadata";
+import type { SocialProfile, EngagementScore } from "./social-data";
 import { buildRevealJSDeck } from "../../presentation/revealjs";
 import { buildPPTX } from "../../presentation/pptxgenjs";
 import { buildPresentonSlides } from "../../presentation/presenton";
 
+const DEFAULT_TOKENS: DesignTokens = {
+  primary_color: "#8b5cf6",
+  accent_color: "#f59e0b",
+  background_color: "#0a0a0f",
+  text_color: "#f8f8ff",
+  font_heading: "Outfit",
+  font_body: "Inter",
+};
+
+function assembleEpkContent(artistSlug: string, store: RunStore): EpkContent {
+  const intake = store.getData<EPKIntake>("intake");
+  const tracks = store.getData<TrackMetadata[]>("tracks") || [];
+  const profiles = store.getData<SocialProfile[]>("profiles") || [];
+  const engagement = store.getData<EngagementScore>("engagement");
+  const summaries =
+    store.getData<Array<{ title: string; publication: string; url: string; summary: string }>>(
+      "press_summaries"
+    ) || [];
+
+  const bioLong = bodyOf(store.content("bio-long.md"));
+  const bioShort = bodyOf(store.content("bio-short.md"));
+
+  return {
+    artistName: intake?.artist_name || artistSlug.replace(/-/g, " "),
+    genre: intake?.genre || "unknown",
+    templateKey: store.getData<string>("templateKey") || intake?.template || "general",
+    bioLong: bioLong || "Bio not yet generated for this run.",
+    bioShort: bioShort || "",
+    discographyLines: tracks
+      .filter((t) => t.title !== "unknown")
+      .map((t) => `${t.title} — ${t.artist} (${t.platform})`),
+    socialLines: profiles
+      .filter((p) => !p.error || p.followers)
+      .map(
+        (p) =>
+          `${p.platform}: ${p.followers != null ? p.followers.toLocaleString() + " followers" : p.handle || p.url}`
+      ),
+    engagementScore: engagement?.score,
+    engagementTier: engagement?.tier,
+    pressLines: summaries.map((s) => `${s.title} — ${s.publication}`),
+    contact: {
+      manager: intake?.manager_name,
+      booking_email: intake?.booking_email,
+      website: intake?.website_url,
+    },
+    tokens: store.getData<DesignTokens>("tokens") || DEFAULT_TOKENS,
+    sections: store.getData<string[]>("sections") || [],
+  };
+}
+
 export async function renderEPK(
   runId: string,
   artistSlug: string,
-  outputs: PresentationOutputType[]
+  outputs: PresentationOutputType[],
+  store: RunStore
 ): Promise<{
   artifacts: Record<string, ROSTRArtifact>;
   output_urls: Record<string, string>;
@@ -31,10 +95,11 @@ export async function renderEPK(
   const now = new Date().toISOString();
   const artifacts: Record<string, ROSTRArtifact> = {};
   const output_urls: Record<string, string> = {};
+  const content = assembleEpkContent(artistSlug, store);
 
   // ── HTML EPK (always generated) ────────────────────────────────────────────
   if (outputs.includes("html")) {
-    const html = buildEPKHtml(artistSlug, runId);
+    const html = buildEPKHtml(artistSlug, runId, content);
     artifacts["epk.html"] = makeArtifact(
       "epk.html",
       "generate-epk",
@@ -42,11 +107,15 @@ export async function renderEPK(
       html,
       now
     );
+    // Stored so deploy_to_vercel can reuse the exact rendered page instead of
+    // re-rendering a second, possibly-empty copy.
+    store.setData("epk.html", html);
   }
 
   // ── PDF (via Vercel Sandbox) ───────────────────────────────────────────────
   if (outputs.includes("pdf")) {
-    const pdfResult = await generatePDFViaSandbox(artistSlug, runId);
+    const html = store.getData<string>("epk.html") || buildEPKHtml(artistSlug, runId, content);
+    const pdfResult = await generatePDFViaSandbox(html);
     artifacts["epk.pdf"] = makeArtifact(
       "epk.pdf",
       "generate-epk",
@@ -59,7 +128,7 @@ export async function renderEPK(
 
   // ── Reveal.js deck ────────────────────────────────────────────────────────
   if (outputs.includes("reveal-js")) {
-    const deckHtml = await buildRevealJSDeck(artistSlug, runId);
+    const deckHtml = await buildRevealJSDeck(artistSlug, runId, content);
     artifacts["epk-deck.html"] = makeArtifact(
       "epk-deck.html",
       "generate-epk",
@@ -71,7 +140,7 @@ export async function renderEPK(
 
   // ── PPTX ─────────────────────────────────────────────────────────────────
   if (outputs.includes("pptx")) {
-    const pptxBuffer = await buildPPTX(artistSlug, runId);
+    const pptxBuffer = await buildPPTX(artistSlug, runId, content);
     artifacts["epk-deck.pptx"] = makeArtifact(
       "epk-deck.pptx",
       "generate-epk",
@@ -84,7 +153,7 @@ export async function renderEPK(
 
   // ── Presenton AI slides ────────────────────────────────────────────────────
   if (outputs.includes("presenton")) {
-    const presentonResult = await buildPresentonSlides(artistSlug, runId);
+    const presentonResult = await buildPresentonSlides(artistSlug, runId, content);
     artifacts["epk-presenton.pptx"] = makeArtifact(
       "epk-presenton.pptx",
       "generate-epk",
@@ -106,9 +175,16 @@ export async function deployToVercel(
   runId: string,
   artistSlug: string,
   projectName: string,
-  customDomain?: string
+  customDomain: string | undefined,
+  store: RunStore
 ): Promise<VercelDeployResult> {
   const VERCEL_TOKEN = process.env.VERCEL_TOKEN;
+
+  // Reuse the HTML this run already rendered (with real content) rather than
+  // silently re-rendering a second, blank copy.
+  const html =
+    store.getData<string>("epk.html") ||
+    buildEPKHtml(artistSlug, runId, assembleEpkContent(artistSlug, store));
 
   // If no Vercel token, return setup instructions (for new users)
   if (!VERCEL_TOKEN) {
@@ -137,7 +213,7 @@ export async function deployToVercel(
         files: [
           {
             file: "index.html",
-            data: buildEPKHtml(artistSlug, runId),
+            data: html,
             encoding: "utf-8",
           },
         ],
@@ -169,7 +245,7 @@ export async function deployToVercel(
       deployment_id: deploy.id,
       status: deploy.readyState === "READY" ? "ready" : "building",
     };
-  } catch (err) {
+  } catch {
     return {
       url: "",
       deployment_id: "",
@@ -236,8 +312,7 @@ function buildVercelSetupInstructions(
 // ─── PDF via Vercel Sandbox ───────────────────────────────────────────────────
 
 async function generatePDFViaSandbox(
-  artistSlug: string,
-  runId: string
+  htmlContent: string
 ): Promise<{ content: string; url?: string }> {
   // Vercel Sandbox is used for secure Puppeteer PDF generation
   // Falls back to instructions if sandbox not configured
@@ -245,7 +320,6 @@ async function generatePDFViaSandbox(
     const { Sandbox } = await import("@vercel/sandbox");
     const sandbox = await Sandbox.create();
 
-    const htmlContent = buildEPKHtml(artistSlug, runId);
     await sandbox.fs.writeFile("/tmp/epk.html", htmlContent);
 
     const cmd = await sandbox.runCommand("npx puppeteer-cli print /tmp/epk.html /tmp/epk.pdf --format A4");
@@ -266,79 +340,103 @@ async function generatePDFViaSandbox(
 
 // ─── HTML EPK renderer ────────────────────────────────────────────────────────
 
-function buildEPKHtml(artistSlug: string, runId: string): string {
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function paragraphs(text: string): string {
+  return text
+    .split(/\n{2,}/)
+    .map((p) => `<p>${esc(p.trim())}</p>`)
+    .join("\n");
+}
+
+function listOrEmpty(items: string[], emptyLabel: string): string {
+  if (!items.length) return `<p><em>${esc(emptyLabel)}</em></p>`;
+  return `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`;
+}
+
+function buildEPKHtml(artistSlug: string, runId: string, content: EpkContent): string {
+  const t = content.tokens;
+  const contactLines = [
+    content.contact.manager ? `Manager: ${esc(content.contact.manager)}` : null,
+    content.contact.booking_email ? `Booking: ${esc(content.contact.booking_email)}` : null,
+    content.contact.website ? `Website: ${esc(content.contact.website)}` : null,
+  ].filter(Boolean);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EPK — ${artistSlug}</title>
-  <meta name="description" content="Electronic Press Kit for ${artistSlug}">
+  <title>${esc(content.artistName)} — Electronic Press Kit</title>
+  <meta name="description" content="Electronic Press Kit for ${esc(content.artistName)}">
   <meta name="robots" content="noindex">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;900&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=${t.font_heading.replace(/ /g, "+")}:wght@300;400;600;700;900&family=${t.font_body.replace(/ /g, "+")}:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --primary: #8b5cf6;
-      --accent: #f59e0b;
-      --bg: #0a0a0f;
-      --surface: #13131a;
-      --text: #f8f8ff;
+      --primary: ${t.primary_color};
+      --accent: ${t.accent_color};
+      --bg: ${t.background_color};
+      --surface: color-mix(in srgb, ${t.background_color} 85%, white);
+      --text: ${t.text_color};
       --muted: #6b7280;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background: var(--bg);
       color: var(--text);
-      font-family: 'Inter', sans-serif;
+      font-family: '${t.font_body}', sans-serif;
       line-height: 1.6;
     }
     .hero {
-      min-height: 100vh;
+      min-height: 60vh;
       display: flex;
       flex-direction: column;
       justify-content: center;
       align-items: center;
       text-align: center;
       padding: 4rem 2rem;
-      background: radial-gradient(ellipse at 50% 0%, rgba(139,92,246,0.3) 0%, transparent 70%);
+      background: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--primary) 30%, transparent) 0%, transparent 70%);
     }
     h1 {
-      font-family: 'Outfit', sans-serif;
-      font-size: clamp(3rem, 10vw, 8rem);
+      font-family: '${t.font_heading}', sans-serif;
+      font-size: clamp(2.5rem, 8vw, 6rem);
       font-weight: 900;
       letter-spacing: -0.04em;
-      line-height: 0.9;
+      line-height: 0.95;
       background: linear-gradient(135deg, #fff 30%, var(--primary));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1rem;
     }
-    .subtitle {
-      font-size: 1.25rem;
-      color: var(--muted);
-      margin-bottom: 3rem;
-    }
+    .subtitle { font-size: 1.1rem; color: var(--muted); }
     section {
       max-width: 900px;
       margin: 0 auto;
-      padding: 4rem 2rem;
+      padding: 3rem 2rem;
       border-bottom: 1px solid rgba(255,255,255,0.05);
     }
+    section p { margin-bottom: 1rem; opacity: 0.9; }
     h2 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 1.5rem;
+      font-family: '${t.font_heading}', sans-serif;
+      font-size: 1.25rem;
       font-weight: 700;
       color: var(--primary);
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1.25rem;
     }
     .badge {
       display: inline-block;
-      background: rgba(139,92,246,0.15);
-      border: 1px solid rgba(139,92,246,0.4);
-      color: #a78bfa;
+      background: color-mix(in srgb, var(--primary) 15%, transparent);
+      border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+      color: var(--primary);
       padding: 0.25rem 0.75rem;
       border-radius: 9999px;
       font-size: 0.8rem;
@@ -347,44 +445,50 @@ function buildEPKHtml(artistSlug: string, runId: string): string {
       text-transform: uppercase;
       margin-bottom: 1rem;
     }
-    footer {
-      text-align: center;
-      padding: 2rem;
-      color: var(--muted);
-      font-size: 0.8rem;
-    }
+    .stat-strip { display: flex; gap: 2rem; flex-wrap: wrap; }
+    .stat { text-align: center; }
+    .stat-value { font-family: '${t.font_heading}', sans-serif; font-size: 2rem; font-weight: 900; color: var(--accent); }
+    .stat-label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    ul { list-style: none; }
+    ul li { padding: 0.4rem 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    footer { text-align: center; padding: 2rem; color: var(--muted); font-size: 0.8rem; }
   </style>
 </head>
 <body>
   <div class="hero">
     <div class="badge">Electronic Press Kit</div>
-    <h1>${artistSlug.replace(/-/g, " ").toUpperCase()}</h1>
-    <p class="subtitle">Generated by ROSTR EPK Agent · Run ${runId.slice(0, 8)}</p>
+    <h1>${esc(content.artistName.toUpperCase())}</h1>
+    <p class="subtitle">${esc(content.genre)} · Run ${runId.slice(0, 8)}</p>
   </div>
 
   <section>
     <h2>Bio</h2>
-    <p><em>[Bio populated from bio-long.md artifact]</em></p>
+    ${paragraphs(content.bioLong)}
   </section>
 
   <section>
     <h2>Discography</h2>
-    <p><em>[Discography populated from discography.md artifact]</em></p>
+    ${listOrEmpty(content.discographyLines, "No discography links were provided for this run.")}
   </section>
 
   <section>
     <h2>Social Analytics</h2>
-    <p><em>[Engagement score and platform data from social-media-raw artifact]</em></p>
+    ${listOrEmpty(content.socialLines, "No social links were provided for this run.")}
+    ${
+      content.engagementScore != null
+        ? `<div class="stat-strip"><div class="stat"><div class="stat-value">${content.engagementScore}</div><div class="stat-label">Engagement Score</div></div><div class="stat"><div class="stat-value">${esc(content.engagementTier || "")}</div><div class="stat-label">Tier</div></div></div>`
+        : ""
+    }
   </section>
 
   <section>
     <h2>Press Coverage</h2>
-    <p><em>[Press summaries from press-link-summary artifact]</em></p>
+    ${listOrEmpty(content.pressLines, "No press links were provided for this run.")}
   </section>
 
   <section>
     <h2>Contact</h2>
-    <p><em>[Contact info from master.md — only fields approved for public release]</em></p>
+    ${listOrEmpty(contactLines as string[], "No public contact info was approved for release.")}
   </section>
 
   <footer>

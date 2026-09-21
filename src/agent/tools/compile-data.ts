@@ -3,7 +3,11 @@
  * Implements skills/compile-data.skill.md and skills/analyze-link-contents.skill.md
  */
 
-import type { ROSTRArtifact } from "../../types";
+import type { ROSTRArtifact, EPKIntake } from "../../types";
+import type { RunStore } from "../store";
+import { bodyOf } from "../store";
+import type { TrackMetadata } from "./extract-metadata";
+import type { SocialProfile, EngagementScore } from "./social-data";
 
 export async function analyzePressLinks(
   pressLinks: string[],
@@ -114,7 +118,7 @@ async function fetchAndSummarizePressLink(
   };
 }
 
-interface PressSummary {
+export interface PressSummary {
   url: string;
   title: string;
   publication: string;
@@ -124,48 +128,120 @@ interface PressSummary {
 }
 
 // ─── compile-data skill ───────────────────────────────────────────────────────
+//
+// Reads every upstream artifact this run has actually produced (via RunStore)
+// and merges their real content into enhanced.md. Previously this returned a
+// static template with "_Populated by X_" placeholders regardless of what the
+// earlier steps found — nothing was ever actually merged.
+
+function trackLine(t: TrackMetadata): string {
+  const bits = [t.title, t.artist !== "unknown" ? `by ${t.artist}` : null, `(${t.platform})`]
+    .filter(Boolean)
+    .join(" ");
+  return t.error
+    ? `- ${t.source_url} — ⚠️ ${t.error}`
+    : `- **${bits}** — ${t.source_url}`;
+}
+
+function socialLine(p: SocialProfile): string {
+  const followers = p.followers != null ? p.followers.toLocaleString() : "unknown";
+  return `- **${p.platform}** (${p.handle || p.url}): ${followers} followers${
+    p.error ? ` — ⚠️ ${p.error}` : ""
+  }`;
+}
+
+function pressLine(s: { title: string; publication: string; url: string; summary: string; error: boolean }): string {
+  return `- **${s.title}** (${s.publication}) — ${s.url}${
+    s.error ? " — ⚠️ fetch failed, verify manually" : `\n  ${s.summary}`
+  }`;
+}
+
+function musicThemeNote(intake: EPKIntake, tracks: TrackMetadata[]): string {
+  // No LLM-backed audio/theme analysis skill exists yet — this surfaces only the
+  // deterministic signals we actually have (genre fields + track count) instead
+  // of fabricating a style narrative. Replace this with a real analyze-music-theme
+  // step before treating it as more than a placeholder.
+  const known = tracks.filter((t) => t.title !== "unknown").length;
+  return [
+    `- Genre (self-reported): ${intake.genre}${intake.subgenre ? ` / ${intake.subgenre}` : ""}`,
+    `- Tracks with resolved metadata: ${known} of ${tracks.length}`,
+    `- ⚠️ No automated theme/style analysis has run yet — this section is deterministic signal only, not a generated narrative.`,
+  ].join("\n");
+}
 
 export async function compileData(
   runId: string,
-  artistSlug: string
+  artistSlug: string,
+  store: RunStore
 ): Promise<{ artifact: ROSTRArtifact; enhanced_md: string }> {
   const now = new Date().toISOString();
 
-  // In production, this reads from the pipeline's artifact store
-  // Here we return the enhanced.md structure template
+  const masterBody = bodyOf(store.content("master.md")) || "_master.md not yet generated for this run_";
+  const tracks = store.getData<TrackMetadata[]>("tracks") || [];
+  const profiles = store.getData<SocialProfile[]>("profiles") || [];
+  const engagement = store.getData<EngagementScore>("engagement");
+  const summaries =
+    store.getData<Array<{ title: string; publication: string; url: string; summary: string; error: boolean }>>(
+      "press_summaries"
+    ) || [];
+  const intake = store.getData<EPKIntake>("intake");
+
+  const discographySection = tracks.length
+    ? tracks.map(trackLine).join("\n")
+    : "_No music links were supplied or extract-music-metadata has not run yet._";
+
+  const socialSection = profiles.length
+    ? profiles.map(socialLine).join("\n") +
+      (engagement
+        ? `\n\n**Engagement score:** ${engagement.score}/100 (${engagement.tier}) — ${engagement.formula}`
+        : "")
+    : "_No social links were supplied or extract-social-media-data has not run yet._";
+
+  const pressSection = summaries.length
+    ? summaries.map(pressLine).join("\n\n")
+    : "_No press links were supplied or analyze-link-contents has not run yet._";
+
+  const themeSection = intake ? musicThemeNote(intake, tracks) : "_master intake unavailable_";
+
+  const inputArtifacts = ["master.md"];
+  if (tracks.length) inputArtifacts.push("discography-raw");
+  if (profiles.length) inputArtifacts.push("social-media-raw");
+  if (summaries.length) inputArtifacts.push("press-link-summary");
+
   const enhanced_md = [
     "---",
     `artifact_type: enhanced.md`,
     `version: "1.0.0"`,
     `status: draft`,
     `owner_skill: compile-data`,
-    `input_artifacts: ["master.md", "discography-raw", "social-media-raw", "press-link-summary"]`,
+    `input_artifacts: [${inputArtifacts.map((i) => `"${i}"`).join(", ")}]`,
     `confidence: 0.9`,
     `created_at: ${now}`,
     "---",
     "",
     `# Enhanced EPK Data — ${artistSlug}`,
     "",
-    "<!-- This file is the single source of truth for bio generation, design, and rendering. -->",
-    "<!-- It merges all upstream artifacts: master.md + discography + social + press. -->",
+    "<!-- Single source of truth for bio generation, design, and rendering. -->",
     "",
-    "## [Merged from master.md]",
-    "_Populated by pipeline run_",
+    "## Master Intake",
     "",
-    "## [Discography]",
-    "_Populated by extract-music-metadata_",
+    masterBody,
     "",
-    "## [Social Analytics]",
-    "_Populated by extract-social-media-data_",
+    "## Discography",
     "",
-    "## [Engagement Score]",
-    "_Populated by calculate-engagement-score_",
+    discographySection,
     "",
-    "## [Press Coverage]",
-    "_Populated by analyze-link-contents_",
+    "## Social Analytics & Engagement Score",
     "",
-    "## [Music Theme Analysis]",
-    "_Populated by analyze-music-theme_",
+    socialSection,
+    "",
+    "## Press Coverage",
+    "",
+    pressSection,
+    "",
+    "## Music Theme Analysis",
+    "",
+    themeSection,
     "",
     `## Run Metadata`,
     `- run_id: ${runId}`,
@@ -177,12 +253,7 @@ export async function compileData(
     version: "1.0.0",
     status: "draft",
     owner_skill: "compile-data",
-    input_artifacts: [
-      "master.md",
-      "discography-raw",
-      "social-media-raw",
-      "press-link-summary",
-    ],
+    input_artifacts: inputArtifacts,
     confidence: 0.9,
     created_at: now,
     content: enhanced_md,
