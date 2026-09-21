@@ -6,7 +6,7 @@
 
 import type { ROSTRArtifact } from "../../types";
 
-interface SocialProfile {
+export interface SocialProfile {
   platform: string;
   url: string;
   handle?: string;
@@ -21,7 +21,7 @@ interface SocialProfile {
   error?: string;
 }
 
-interface EngagementScore {
+export interface EngagementScore {
   score: number; // 0–100
   tier: "emerging" | "growing" | "established" | "major";
   formula: string;

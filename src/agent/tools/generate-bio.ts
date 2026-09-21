@@ -6,6 +6,8 @@
 
 import { generateText, createGateway } from "ai";
 import type { ROSTRArtifact } from "../../types";
+import type { RunStore } from "../store";
+import { bodyOf } from "../store";
 
 const gateway = createGateway({
   apiKey: process.env.VERCEL_AI_GATEWAY_KEY || process.env.ANTHROPIC_API_KEY,
@@ -18,7 +20,8 @@ const model = gateway(
 export async function generateBio(
   runId: string,
   artistSlug: string,
-  tone: "press" | "booking" | "social"
+  tone: "press" | "booking" | "social",
+  store: RunStore
 ): Promise<{
   bio_long: ROSTRArtifact;
   bio_short: ROSTRArtifact;
@@ -34,20 +37,30 @@ export async function generateBio(
       "Write in a friendly, first-person tone suitable for an Instagram bio and website About page.",
   };
 
+  // enhanced.md (falls back to master.md) is the ONLY source of facts — without
+  // this, the model had nothing but a run_id and had to either refuse or invent.
+  const sourceMaterial =
+    bodyOf(store.content("enhanced.md")) ||
+    bodyOf(store.content("master.md")) ||
+    "(no source material available for this run — do not invent facts; state that intake is incomplete)";
+
   // Long bio (400 words)
   const { text: bioLongText } = await generateText({
     model,
-    system: `You are a music industry press kit writer. 
+    system: `You are a music industry press kit writer.
 Rules:
 - Never fabricate quotes, metrics, streaming numbers, or collaborations
-- Only use facts present in the source material
+- Only use facts present in the source material below
 - If a fact is missing, omit it — do not invent it
 - ${toneInstructions[tone]}`,
-    prompt: `Write a professional 400-word artist bio for run_id: ${runId}, artist: ${artistSlug}.
-Use only the information in the enhanced.md artifact for this run.
+    prompt: `Write a professional 400-word artist bio for ${artistSlug} (run_id: ${runId}).
 Tone: ${tone}
 
-Structure:
+## Source material (the only facts you may use)
+
+${sourceMaterial}
+
+## Structure
 1. Opening hook — artist's sonic identity in 1-2 sentences
 2. Career narrative — origin, key releases, milestones
 3. Sound/style — musical influences and sonic characteristics

@@ -4,23 +4,23 @@
  * Applies design tokens resolved from epk-design-system.json.
  */
 
-import type { SlideContent, DesignTokens } from "../types";
+import type { DesignTokens, EpkContent } from "../types";
 
 export async function buildPPTX(
   artistSlug: string,
   runId: string,
-  tokens?: DesignTokens
+  content: EpkContent
 ): Promise<Buffer> {
   // Dynamic import — PptxGenJS is a large library
   const PptxGenJS = (await import("pptxgenjs")).default;
   const pptx = new PptxGenJS();
 
-  const theme = tokens || defaultTokens();
+  const theme = content.tokens || defaultTokens();
 
   pptx.layout = "LAYOUT_WIDE"; // 16:9 widescreen
   pptx.author = "ROSTR EPK Agent";
   pptx.company = "Artispreneur / ROSTR";
-  pptx.title = `${artistSlug.replace(/-/g, " ")} — Electronic Press Kit`;
+  pptx.title = `${content.artistName} — Electronic Press Kit`;
   pptx.subject = "EPK";
 
   // ── Slide 1: Cover ─────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ export async function buildPPTX(
     align: "center",
   });
 
-  coverSlide.addText(artistSlug.replace(/-/g, " ").toUpperCase(), {
+  coverSlide.addText(content.artistName.toUpperCase(), {
     x: "5%", y: "40%", w: "90%", h: "30%",
     fontSize: 60,
     color: "FFFFFF",
@@ -63,7 +63,7 @@ export async function buildPPTX(
   const bioSlide = pptx.addSlide();
   bioSlide.background = { color: theme.background_color.replace("#", "") };
   addSectionHeader(bioSlide, "ARTIST BIO", theme);
-  bioSlide.addText("[Long-form bio from bio-long.md artifact]", {
+  bioSlide.addText(content.bioLong || "Bio not yet generated for this run.", {
     x: "8%", y: "25%", w: "84%", h: "60%",
     fontSize: 14,
     color: "CCCCCC",
@@ -77,7 +77,11 @@ export async function buildPPTX(
   const discoSlide = pptx.addSlide();
   discoSlide.background = { color: theme.background_color.replace("#", "") };
   addSectionHeader(discoSlide, "DISCOGRAPHY", theme);
-  discoSlide.addText("[Track catalog from discography.md]", {
+  discoSlide.addText(
+    content.discographyLines.length
+      ? content.discographyLines.join("\n")
+      : "No discography links were provided for this run.",
+    {
     x: "8%", y: "25%", w: "84%", h: "60%",
     fontSize: 13,
     color: "CCCCCC",
@@ -99,7 +103,7 @@ export async function buildPPTX(
     line: { color: theme.primary_color.replace("#", ""), width: 1 },
     rectRadius: 0.1,
   });
-  socialSlide.addText("[Engagement Score]", {
+  socialSlide.addText(content.engagementScore != null ? String(content.engagementScore) : "—", {
     x: "30%", y: "40%", w: "40%",
     fontSize: 40,
     color: theme.accent_color.replace("#", ""),
@@ -107,7 +111,7 @@ export async function buildPPTX(
     fontFace: theme.font_heading || "Arial",
     align: "center",
   });
-  socialSlide.addText("ENGAGEMENT SCORE", {
+  socialSlide.addText(content.engagementTier ? `ENGAGEMENT SCORE — ${content.engagementTier.toUpperCase()}` : "ENGAGEMENT SCORE", {
     x: "30%", y: "58%", w: "40%",
     fontSize: 10,
     color: "999999",
@@ -121,7 +125,11 @@ export async function buildPPTX(
   const pressSlide = pptx.addSlide();
   pressSlide.background = { color: theme.background_color.replace("#", "") };
   addSectionHeader(pressSlide, "PRESS COVERAGE", theme);
-  pressSlide.addText("[Press summaries from press-link-summary artifact]", {
+  pressSlide.addText(
+    content.pressLines.length
+      ? content.pressLines.join("\n")
+      : "No press links were provided for this run.",
+    {
     x: "8%", y: "25%", w: "84%", h: "60%",
     fontSize: 13,
     color: "CCCCCC",
@@ -135,7 +143,11 @@ export async function buildPPTX(
   const contactSlide = pptx.addSlide();
   contactSlide.background = { color: theme.background_color.replace("#", "") };
   addSectionHeader(contactSlide, "CONTACT & BOOKING", theme);
-  contactSlide.addText("[Contact info from master.md — only public-approved fields]", {
+  const contactLine =
+    [content.contact.booking_email, content.contact.manager, content.contact.website]
+      .filter(Boolean)
+      .join("  ·  ") || "No public contact info was approved for release.";
+  contactSlide.addText(contactLine, {
     x: "8%", y: "35%", w: "84%",
     fontSize: 16,
     color: "DDDDDD",

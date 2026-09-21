@@ -30,3 +30,10 @@
 **Guardrails:** This is the only skill allowed to produce the final `epk.html`/`epk.pdf`. Any content gap
 must be visibly handled (e.g., section omitted or marked "coming soon") rather than invented. Deployment is
 gated; rendering to file is not.
+
+**Implementation note:** when the Presenton output is requested, this skill hands Presenton its own
+`slides_markdown` input (an array of pre-written per-slide markdown) instead of a bare topic string —
+Presenton's outline-generation LLM call is skipped since this skill already compiled real, sourced content;
+Presenton still selects/renders layouts from its own template set. This mirrors Presenton's documented
+pattern for skipping AI outline generation (github.com/presenton/presenton) — Presenton is called as an
+optional external renderer, not vendored into this repo.
