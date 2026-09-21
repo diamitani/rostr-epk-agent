@@ -325,19 +325,46 @@ export async function streamEPKAgent(
               })
             );
           } else if (chunk.type === "tool-result") {
-            sendSSE(
-              JSON.stringify({
-                type: "skill_complete",
-                skill: chunk.toolName,
-                timestamp: new Date().toISOString(),
-              })
-            );
+            // render_epk's output is the only tool result the front end actually
+            // needs to render the final EPK (epk.html content + output_urls) —
+            // forwarded here since there's no DB to persist it to and re-fetch
+            // from; everything else stays step-name-only to keep the stream lean.
+            const payload: Record<string, unknown> = {
+              type: "skill_complete",
+              skill: chunk.toolName,
+              timestamp: new Date().toISOString(),
+            };
+            if (chunk.toolName === "render_epk") {
+              payload.output = chunk.output;
+            }
+            sendSSE(JSON.stringify(payload));
           } else if (chunk.type === "finish") {
             sendSSE(
               JSON.stringify({
                 type: "pipeline_complete",
                 message: `🎉 EPK complete for ${intake.artist_name}`,
                 run_id,
+                timestamp: new Date().toISOString(),
+              })
+            );
+          } else if (chunk.type === "error") {
+            // The AI SDK delivers a model/provider failure (e.g. no API key, or
+            // the Gateway unreachable) as an "error" chunk THROUGH the stream —
+            // it does not throw, so this previously fell through every branch
+            // above, did nothing, and the stream just closed silently. The
+            // client would sit on "Give us a minute" forever with no way to
+            // know the run had already failed.
+            const errorChunk = chunk as { type: "error"; error: unknown };
+            const message =
+              errorChunk.error instanceof Error
+                ? errorChunk.error.message
+                : typeof errorChunk.error === "string"
+                  ? errorChunk.error
+                  : "The AI model call failed — check DEFAULT_MODEL / AI_GATEWAY_API_KEY / ANTHROPIC_API_KEY and network access to the Gateway.";
+            sendSSE(
+              JSON.stringify({
+                type: "error",
+                message,
                 timestamp: new Date().toISOString(),
               })
             );
