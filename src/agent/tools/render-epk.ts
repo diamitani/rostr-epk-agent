@@ -29,6 +29,7 @@ import type { RunStore } from "../store";
 import { bodyOf } from "../store";
 import type { TrackMetadata } from "./extract-metadata";
 import type { SocialProfile, EngagementScore } from "./social-data";
+import type { DiscographyStats } from "./create-discography";
 import { buildRevealJSDeck } from "../../presentation/revealjs";
 import { buildPPTX } from "../../presentation/pptxgenjs";
 import { buildPresentonSlides } from "../../presentation/presenton";
@@ -42,6 +43,16 @@ const DEFAULT_TOKENS: DesignTokens = {
   font_body: "Inter",
 };
 
+/** Splits free-text intake fields (comma- or newline-separated) into trimmed lines. */
+function splitLines(text: string | undefined): string[] {
+  if (!text) return [];
+  return text
+    .split(/\n+/)
+    .flatMap((line) => line.split(/,\s*/))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function assembleEpkContent(artistSlug: string, store: RunStore): EpkContent {
   const intake = store.getData<EPKIntake>("intake");
   const tracks = store.getData<TrackMetadata[]>("tracks") || [];
@@ -51,19 +62,31 @@ function assembleEpkContent(artistSlug: string, store: RunStore): EpkContent {
     store.getData<Array<{ title: string; publication: string; url: string; summary: string }>>(
       "press_summaries"
     ) || [];
+  const discographyStats = store.getData<DiscographyStats>("discography_stats");
 
   const bioLong = bodyOf(store.content("bio-long.md"));
   const bioShort = bodyOf(store.content("bio-short.md"));
+  const themeAnalysis = bodyOf(store.content("music-theme-analysis.md"));
 
   return {
     artistName: intake?.artist_name || artistSlug.replace(/-/g, " "),
     genre: intake?.genre || "unknown",
+    genreTags: [
+      intake?.genre,
+      ...(intake?.genre_additional || []),
+      ...(intake?.artist_type || []),
+    ].filter((v): v is string => Boolean(v)),
     templateKey: store.getData<string>("templateKey") || intake?.template || "general",
     bioLong: bioLong || "Bio not yet generated for this run.",
     bioShort: bioShort || "",
+    yearStarted: intake?.year_started,
+    proAffiliation: intake?.pro_affiliation,
     discographyLines: tracks
       .filter((t) => t.title !== "unknown")
       .map((t) => `${t.title} — ${t.artist} (${t.platform})`),
+    discographyStatsLine: discographyStats
+      ? `${discographyStats.resolved_count} releases · active ${discographyStats.years_active} · most recent ${discographyStats.most_recent_release}`
+      : undefined,
     socialLines: profiles
       .filter((p) => !p.error || p.followers)
       .map(
@@ -73,13 +96,26 @@ function assembleEpkContent(artistSlug: string, store: RunStore): EpkContent {
     engagementScore: engagement?.score,
     engagementTier: engagement?.tier,
     pressLines: summaries.map((s) => `${s.title} — ${s.publication}`),
+    themeAnalysis: themeAnalysis || "No theme/style analysis has run yet for this run.",
+    collaborationsLines: splitLines(intake?.past_collaborations),
+    performancesLines: splitLines(intake?.performances),
+    technicalRider: intake?.technical_rider,
+    performanceRider: intake?.performance_rider,
+    identityStatement: intake?.artist_identity_brand,
     contact: {
       manager: intake?.manager_name,
       booking_email: intake?.booking_email,
       website: intake?.website_url,
     },
     tokens: store.getData<DesignTokens>("tokens") || DEFAULT_TOKENS,
-    sections: store.getData<string[]>("sections") || [],
+    sections: store.getData<string[]>("sections") || [
+      "hero",
+      "bio-long",
+      "discography-full",
+      "social-engagement",
+      "press",
+      "contact",
+    ],
   };
 }
 
@@ -360,13 +396,97 @@ function listOrEmpty(items: string[], emptyLabel: string): string {
   return `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`;
 }
 
+function notProvided(): string {
+  return `<p><em>Not provided.</em></p>`;
+}
+
+function sectionBlock(title: string, bodyHtml: string): string {
+  return `<section><h2>${esc(title)}</h2>${bodyHtml}</section>`;
+}
+
+function statStripHtml(content: EpkContent): string {
+  const stats: Array<[string, string]> = [];
+  if (content.engagementScore != null) stats.push([String(content.engagementScore), "Engagement Score"]);
+  if (content.engagementTier) stats.push([content.engagementTier, "Tier"]);
+  if (content.yearStarted) stats.push([content.yearStarted, "Active Since"]);
+  if (!stats.length) return "";
+  return `<div class="stat-strip">${stats
+    .map(([v, l]) => `<div class="stat"><div class="stat-value">${esc(v)}</div><div class="stat-label">${esc(l)}</div></div>`)
+    .join("")}</div>`;
+}
+
+function contactHtml(content: EpkContent): string {
+  const lines = [
+    content.contact.booking_email ? `Booking: ${content.contact.booking_email}` : null,
+    content.contact.manager ? `Manager: ${content.contact.manager}` : null,
+    content.contact.website ? `Website: ${content.contact.website}` : null,
+  ].filter((v): v is string => Boolean(v));
+  return listOrEmpty(lines, "No public contact info was approved for release.");
+}
+
+/**
+ * One render function per section id from generate-design-system.ts's
+ * TEMPLATE_LIBRARY. Previously buildEPKHtml always rendered the same fixed 5
+ * sections regardless of template — the design system's resolved `sections`
+ * list was computed but never consumed. Booking/Media/Brand templates now
+ * actually differ from General instead of all rendering identically.
+ */
+const SECTION_RENDERERS: Record<string, (c: EpkContent) => string> = {
+  "bio-short": (c) => sectionBlock("Bio", paragraphs(c.bioShort || c.bioLong)),
+  "bio-long": (c) => sectionBlock("Bio", paragraphs(c.bioLong)),
+  "genre-tags": (c) => sectionBlock("Genre & Type", c.genreTags.length ? listOrEmpty(c.genreTags, "") : notProvided()),
+  "discography-top3": (c) =>
+    sectionBlock("Discography", listOrEmpty(c.discographyLines.slice(0, 3), "No discography links were provided for this run.")),
+  "discography-full": (c) =>
+    sectionBlock(
+      "Discography",
+      listOrEmpty(c.discographyLines, "No discography links were provided for this run.") +
+        (c.discographyStatsLine ? `<p class="stat-label">${esc(c.discographyStatsLine)}</p>` : "")
+    ),
+  "discography-highlights": (c) =>
+    sectionBlock("Discography Highlights", listOrEmpty(c.discographyLines.slice(0, 5), "No discography links were provided for this run.")),
+  "stat-strip": (c) => sectionBlock("Key Stats", statStripHtml(c) || notProvided()),
+  "theme-analysis": (c) => sectionBlock("Theme & Style", paragraphs(c.themeAnalysis)),
+  "social-engagement": (c) =>
+    sectionBlock("Social & Engagement", listOrEmpty(c.socialLines, "No social links were provided for this run.") + statStripHtml(c)),
+  "social-engagement-expanded": (c) =>
+    sectionBlock(
+      "Social & Engagement — Full Breakdown",
+      listOrEmpty(c.socialLines, "No social links were provided for this run.") + statStripHtml(c)
+    ),
+  press: (c) => sectionBlock("Press Coverage", listOrEmpty(c.pressLines, "No press links were provided for this run.")),
+  "press-full": (c) => sectionBlock("Press Coverage", listOrEmpty(c.pressLines, "No press links were provided for this run.")),
+  collaborations: (c) => sectionBlock("Collaborations", listOrEmpty(c.collaborationsLines, "Not provided.")),
+  performances: (c) => sectionBlock("Performances", listOrEmpty(c.performancesLines, "Not provided.")),
+  "technical-rider": (c) => sectionBlock("Technical Rider", c.technicalRider ? paragraphs(c.technicalRider) : notProvided()),
+  "performance-rider": (c) => sectionBlock("Performance Rider", c.performanceRider ? paragraphs(c.performanceRider) : notProvided()),
+  "identity-statement": (c) => sectionBlock("Artist Identity", c.identityStatement ? paragraphs(c.identityStatement) : notProvided()),
+  "brand-analysis": (c) =>
+    sectionBlock(
+      "Brand Analysis",
+      listOrEmpty(
+        [
+          ...c.socialLines,
+          ...(c.engagementScore != null ? [`Engagement score: ${c.engagementScore}/100 (${c.engagementTier})`] : []),
+        ],
+        "Not provided."
+      )
+    ),
+  contact: (c) => sectionBlock("Contact", contactHtml(c)),
+  "media-gallery": () => sectionBlock("Media Gallery", `<p><em>Media upload/gallery support is not implemented yet.</em></p>`),
+};
+
 function buildEPKHtml(artistSlug: string, runId: string, content: EpkContent): string {
   const t = content.tokens;
-  const contactLines = [
-    content.contact.manager ? `Manager: ${esc(content.contact.manager)}` : null,
-    content.contact.booking_email ? `Booking: ${esc(content.contact.booking_email)}` : null,
-    content.contact.website ? `Website: ${esc(content.contact.website)}` : null,
-  ].filter(Boolean);
+  const sectionIds = content.sections.filter((s) => s !== "hero");
+  const bodySections = sectionIds
+    .map((id) => SECTION_RENDERERS[id]?.(content))
+    .filter((html): html is string => Boolean(html))
+    .join("\n");
+  // Contact is required on every template — render it even if the resolved
+  // section list somehow omitted it, rather than shipping a booker no way to
+  // reach the artist.
+  const contactBlock = sectionIds.includes("contact") ? "" : SECTION_RENDERERS.contact(content);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -461,35 +581,8 @@ function buildEPKHtml(artistSlug: string, runId: string, content: EpkContent): s
     <p class="subtitle">${esc(content.genre)} · Run ${runId.slice(0, 8)}</p>
   </div>
 
-  <section>
-    <h2>Bio</h2>
-    ${paragraphs(content.bioLong)}
-  </section>
-
-  <section>
-    <h2>Discography</h2>
-    ${listOrEmpty(content.discographyLines, "No discography links were provided for this run.")}
-  </section>
-
-  <section>
-    <h2>Social Analytics</h2>
-    ${listOrEmpty(content.socialLines, "No social links were provided for this run.")}
-    ${
-      content.engagementScore != null
-        ? `<div class="stat-strip"><div class="stat"><div class="stat-value">${content.engagementScore}</div><div class="stat-label">Engagement Score</div></div><div class="stat"><div class="stat-value">${esc(content.engagementTier || "")}</div><div class="stat-label">Tier</div></div></div>`
-        : ""
-    }
-  </section>
-
-  <section>
-    <h2>Press Coverage</h2>
-    ${listOrEmpty(content.pressLines, "No press links were provided for this run.")}
-  </section>
-
-  <section>
-    <h2>Contact</h2>
-    ${listOrEmpty(contactLines as string[], "No public contact info was approved for release.")}
-  </section>
+  ${bodySections}
+  ${contactBlock}
 
   <footer>
     Built with ROSTR EPK Agent · <a href="https://github.com/diamitani/rostr-epk-agent" style="color: var(--primary)">Plugin Repo</a>

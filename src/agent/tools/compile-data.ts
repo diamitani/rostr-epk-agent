@@ -156,19 +156,6 @@ function pressLine(s: { title: string; publication: string; url: string; summary
   }`;
 }
 
-function musicThemeNote(intake: EPKIntake, tracks: TrackMetadata[]): string {
-  // No LLM-backed audio/theme analysis skill exists yet — this surfaces only the
-  // deterministic signals we actually have (genre fields + track count) instead
-  // of fabricating a style narrative. Replace this with a real analyze-music-theme
-  // step before treating it as more than a placeholder.
-  const known = tracks.filter((t) => t.title !== "unknown").length;
-  return [
-    `- Genre (self-reported): ${intake.genre}${intake.subgenre ? ` / ${intake.subgenre}` : ""}`,
-    `- Tracks with resolved metadata: ${known} of ${tracks.length}`,
-    `- ⚠️ No automated theme/style analysis has run yet — this section is deterministic signal only, not a generated narrative.`,
-  ].join("\n");
-}
-
 export async function compileData(
   runId: string,
   artistSlug: string,
@@ -201,12 +188,24 @@ export async function compileData(
     ? summaries.map(pressLine).join("\n\n")
     : "_No press links were supplied or analyze-link-contents has not run yet._";
 
-  const themeSection = intake ? musicThemeNote(intake, tracks) : "_master intake unavailable_";
+  const themeSection =
+    bodyOf(store.content("music-theme-analysis.md")) ||
+    "_analyze-music-theme has not run yet for this run._";
+
+  const discographyMdSection =
+    bodyOf(store.content("discography.md")) || "_create-discography has not run yet for this run._";
+
+  const collaborationsSection = intake?.past_collaborations || "none provided";
+  const performancesSection = intake?.performances || "none provided";
+  const technicalRiderSection = intake?.technical_rider || "none provided";
+  const performanceRiderSection = intake?.performance_rider || "none provided";
 
   const inputArtifacts = ["master.md"];
   if (tracks.length) inputArtifacts.push("discography-raw");
+  if (store.content("discography.md")) inputArtifacts.push("discography.md");
   if (profiles.length) inputArtifacts.push("social-media-raw");
   if (summaries.length) inputArtifacts.push("press-link-summary");
+  if (store.content("music-theme-analysis.md")) inputArtifacts.push("music-theme-analysis.md");
 
   const enhanced_md = [
     "---",
@@ -227,9 +226,13 @@ export async function compileData(
     "",
     masterBody,
     "",
-    "## Discography",
+    "## Discography (raw extraction)",
     "",
     discographySection,
+    "",
+    "## Discography (finalized catalogue)",
+    "",
+    discographyMdSection,
     "",
     "## Social Analytics & Engagement Score",
     "",
@@ -242,6 +245,22 @@ export async function compileData(
     "## Music Theme Analysis",
     "",
     themeSection,
+    "",
+    "## Collaborations",
+    "",
+    collaborationsSection,
+    "",
+    "## Performances",
+    "",
+    performancesSection,
+    "",
+    "## Technical Rider",
+    "",
+    technicalRiderSection,
+    "",
+    "## Performance Rider",
+    "",
+    performanceRiderSection,
     "",
     `## Run Metadata`,
     `- run_id: ${runId}`,

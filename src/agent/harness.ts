@@ -10,6 +10,7 @@ import type {
   ROSTRArtifact,
 } from "../types";
 import { RunStore } from "./store";
+import type { TrackMetadata } from "./tools/extract-metadata";
 
 // ─── AI Gateway model (routes through Vercel AI Gateway) ─────────────────────
 
@@ -102,6 +103,34 @@ function buildEpkTools(ctx: { runId: string; artistSlug: string; intake: EPKInta
         const result = await analyzePressLinks(input.press_links, intake.artist_name);
         store.setArtifact("press-link-summary", result.artifact);
         store.setData("press_summaries", result.summaries);
+        return result;
+      },
+    }),
+
+    create_discography: tool({
+      description:
+        "Finalize the raw discography extraction into a presentation-ready catalogue (discography.md + stats). Run after extract_music_metadata.",
+      parameters: z.object({}),
+      execute: async (_input: Record<string, never>, _opts: ToolExecutionOptions) => {
+        const { createDiscography } = await import("./tools/create-discography");
+        const tracks = store.getData<TrackMetadata[]>("tracks") || [];
+        const result = await createDiscography(tracks);
+        store.setArtifact("discography.md", result.artifact);
+        store.setData("discography_csv", result.discography_csv);
+        store.setData("discography_stats", result.stats);
+        return result;
+      },
+    }),
+
+    analyze_music_theme: tool({
+      description:
+        "Analyze the artist's musical theme/style from track metadata, genre, and their own influence/theme descriptions. Run after extract_music_metadata (or with an empty track list if no music links were supplied — it still uses the intake's genre/influences).",
+      parameters: z.object({}),
+      execute: async (_input: Record<string, never>, _opts: ToolExecutionOptions) => {
+        const { analyzeMusicTheme } = await import("./tools/analyze-music-theme");
+        const tracks = store.getData<TrackMetadata[]>("tracks") || [];
+        const result = await analyzeMusicTheme(intake, tracks);
+        store.setArtifact("music-theme-analysis.md", result.artifact);
         return result;
       },
     }),
@@ -348,12 +377,15 @@ You are the best in the world at transforming an artist's raw submission into a 
 
 ## Pipeline order (execute tools in this sequence)
 1. format_inputs → master.md
-2. In parallel: extract_music_metadata + extract_social_data + analyze_press_links + generate_design_system
-   (generate_design_system only needs the template/genre from intake, so it does not depend on the others)
-3. compile_data → enhanced.md (depends on format_inputs and whichever extractors ran)
-4. generate_bio → bio-long.md + bio-short.md (depends on compile_data)
-5. render_epk → html + pdf + reveal-js + pptx + presenton (depends on generate_bio and generate_design_system)
-6. deploy_to_vercel (only if user requested, with approval)
+2. extract_music_metadata → discography-raw (skip if no music links were supplied)
+3. In parallel: create_discography + analyze_music_theme + extract_social_data + analyze_press_links + generate_design_system
+   (create_discography and analyze_music_theme depend on extract_music_metadata's output, or run with an
+   empty track list if no music links were supplied; generate_design_system only needs intake, so it can
+   run any time)
+4. compile_data → enhanced.md (depends on format_inputs and whichever of the above ran)
+5. generate_bio → bio-long.md + bio-short.md (depends on compile_data)
+6. render_epk → html + pdf + reveal-js + pptx + presenton (depends on generate_bio and generate_design_system)
+7. deploy_to_vercel (only if user requested, with approval)
 
 ## Artist context
 Name: ${intake.artist_name}

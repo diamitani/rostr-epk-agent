@@ -45,22 +45,50 @@ export interface ROSTRSkillResult {
 
 // ─── EPK Pipeline ────────────────────────────────────────────────────────────
 
+export type ArtistType =
+  | "vocalist"
+  | "producer"
+  | "engineer"
+  | "emcee"
+  | "songwriter"
+  | "instrumentalist"
+  | "comedian"
+  | "other";
+
 export interface EPKIntake {
   // Artist identity
   artist_name: string;
   legal_name?: string;
+  date_of_birth?: string;
+  birth_city?: string;
+  hometown?: string;
   genre: string;
   subgenre?: string;
+  genre_additional?: string[];
+  artist_type?: ArtistType[];
   city: string;
   state?: string;
   country?: string;
   pronouns?: string;
+  year_started?: string;
+  pro_affiliation?: string; // Performing Rights Org (ASCAP/BMI/SESAC/etc), if registered
 
   // Bio seeds
   bio_notes?: string;
   career_highlights?: string;
   influences?: string;
   goals?: string;
+  music_theme_notes?: string; // artist's own description of their sound/theme
+  artist_identity_brand?: string; // artist's own brand/identity statement
+
+  // Career signal — free text, comma- or newline-separated; rendered as lists,
+  // never fabricated beyond what the artist supplied.
+  past_collaborations?: string;
+  performances?: string; // notable shows/festivals/tours
+
+  // Riders (Booking template)
+  technical_rider?: string;
+  performance_rider?: string;
 
   // Links
   spotify_url?: string;
@@ -163,14 +191,24 @@ export interface PresentationSpec {
 export interface EpkContent {
   artistName: string;
   genre: string;
+  genreTags: string[]; // genre + additional genres + artist type
   templateKey: string;
   bioLong: string;
   bioShort: string;
+  yearStarted?: string;
+  proAffiliation?: string;
   discographyLines: string[];
+  discographyStatsLine?: string;
   socialLines: string[];
   engagementScore?: number;
   engagementTier?: string;
   pressLines: string[];
+  themeAnalysis: string;
+  collaborationsLines: string[];
+  performancesLines: string[];
+  technicalRider?: string;
+  performanceRider?: string;
+  identityStatement?: string;
   contact: {
     manager?: string;
     booking_email?: string;
