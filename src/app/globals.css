@@ -3,31 +3,32 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * ArtistEPKs brand tokens — placeholder dark palette, pending the
- * webpage-designer pass. Kept as HSL triples (not oklch) so they're easy to
- * eyeball and adjust by hand without a color-space converter.
+ * ArtistEPKs brand tokens — "Editorial Dark": dark charcoal, cream text, a
+ * single restrained gold accent. Cormorant Garamond for display type, DM
+ * Sans for body copy, DM Mono for labels/eyebrows/UI chrome. See
+ * docs/front-end-plan.md for the section plan this serves.
  */
 :root {
-  --background: 240 25% 5%;
-  --foreground: 240 20% 97%;
-  --card: 240 20% 8%;
-  --card-foreground: 240 20% 97%;
-  --popover: 240 20% 8%;
-  --popover-foreground: 240 20% 97%;
-  --primary: 258 90% 66%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 240 15% 14%;
-  --secondary-foreground: 240 20% 97%;
-  --muted: 240 15% 14%;
-  --muted-foreground: 240 8% 65%;
-  --accent: 38 92% 50%;
-  --accent-foreground: 240 25% 5%;
-  --destructive: 0 72% 51%;
+  --background: 30 12% 6%;
+  --foreground: 40 30% 92%;
+  --card: 30 12% 9%;
+  --card-foreground: 40 30% 92%;
+  --popover: 30 12% 9%;
+  --popover-foreground: 40 30% 92%;
+  --primary: 43 58% 52%;
+  --primary-foreground: 30 20% 8%;
+  --secondary: 30 10% 14%;
+  --secondary-foreground: 40 30% 92%;
+  --muted: 30 10% 14%;
+  --muted-foreground: 35 12% 62%;
+  --accent: 43 58% 52%;
+  --accent-foreground: 30 20% 8%;
+  --destructive: 5 70% 52%;
   --destructive-foreground: 0 0% 100%;
-  --border: 240 15% 18%;
-  --input: 240 15% 18%;
-  --ring: 258 90% 66%;
-  --radius: 0.75rem;
+  --border: 30 10% 18%;
+  --input: 30 10% 18%;
+  --ring: 43 58% 52%;
+  --radius: 0.5rem;
 }
 
 @theme inline {
@@ -54,6 +55,10 @@
   --radius-md: calc(var(--radius) - 0.125rem);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 0.25rem);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
 }
 
 * {
@@ -84,4 +89,19 @@ body {
 ::-webkit-scrollbar-thumb {
   background: hsl(var(--primary) / 0.4);
   border-radius: 3px;
+}
+
+/* Subtle scroll-reveal used across marketing sections — restrained, no glow spam */
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    opacity: 0;
+    transform: translateY(12px);
+    animation: reveal-in 0.8s ease-out forwards;
+  }
+  @keyframes reveal-in {
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
