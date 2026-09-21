@@ -24,7 +24,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { streamEPKAgent } from "../agent/harness";
+import { runEPKAgent } from "../agent/harness";
 import type { EPKIntake } from "../types";
 
 export function createMCPServer(): McpServer {
@@ -88,13 +88,12 @@ export function createMCPServer(): McpServer {
         custom_domain: params.custom_domain,
       };
 
-      const events: string[] = [];
-
-      const { run_id } = await streamEPKAgent(intake, {
-        onEvent: (event) => {
-          events.push(`[${event.type}] ${event.message}`);
-        },
-      });
+      const { result, run_id } = runEPKAgent(intake);
+      // MCP tool calls are request/response, not a long-lived UI stream — wait
+      // for the full agent loop (all pipeline steps) to actually finish before
+      // replying, rather than returning as soon as the stream started (which is
+      // what this did before and meant `events` below was always empty).
+      await result.text;
 
       return {
         content: [
@@ -103,13 +102,11 @@ export function createMCPServer(): McpServer {
             text: JSON.stringify(
               {
                 run_id,
-                status: "started",
+                status: "complete",
                 artist: params.artist_name,
-                message: `EPK pipeline started. Check status at GET /api/epk/status/${run_id}`,
-                events,
+                message: `EPK pipeline finished for run ${run_id}.`,
                 api: {
-                  stream: `POST /api/epk/stream`,
-                  status: `GET /api/epk/status/${run_id}`,
+                  run: `POST /api/epk`,
                 },
               },
               null,

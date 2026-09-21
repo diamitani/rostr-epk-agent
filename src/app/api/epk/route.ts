@@ -1,13 +1,13 @@
 /**
- * POST /api/epk — Stream EPK pipeline via Server-Sent Events
+ * POST /api/epk — Run the EPK pipeline, streamed as a Vercel AI SDK UI
+ * message stream (not a bespoke SSE protocol — @ai-sdk/react's useChat
+ * consumes this natively on the client, with tool-call/tool-result state
+ * for every pipeline step built in).
  * GET  /api/epk — Health check
- *
- * ROSTR runtime calls this as its primary invocation endpoint.
- * Streams pipeline events as SSE (text/event-stream).
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { streamEPKAgent } from "@/agent/harness";
+import { runEPKAgent } from "@/agent/harness";
 import { compilePAL, saveSession } from "@/agent/pal";
 import type { EPKIntake } from "@/types";
 
@@ -29,7 +29,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Run PAL compilation first — surfaces ambiguities before pipeline starts
+    // Run PAL compilation first — surfaces ambiguities before pipeline starts.
+    // The full manifest isn't threaded into the message stream (no client
+    // consumed it), but the blocking check still gates the run.
     const palManifest = compilePAL(intake);
     const blockingAmbiguities = palManifest.ambiguities.filter(
       (a) => a.severity === "blocking"
@@ -51,47 +53,24 @@ export async function POST(req: NextRequest) {
       .replace(/\s+/g, "-")
       .replace(/[^a-z0-9-]/g, "");
 
-    // Stream the pipeline
-    const { stream, run_id } = await streamEPKAgent(intake, {
-      onEvent: async (event) => {
-        if (event.type === "pipeline_complete") {
-          // Persist to ContextEngine on completion
-          await saveSession(run_id, artistSlug, intake, {
-            status: "complete",
-            vercel_url: event.data?.vercel_url as string | undefined,
-          });
-        }
+    const { result, run_id } = runEPKAgent(intake, {
+      onFinish: async () => {
+        await saveSession(run_id, artistSlug, intake, { status: "complete" });
       },
     });
 
-    // Prepend PAL manifest as first SSE event
-    const palEvent = `data: ${JSON.stringify({
-      type: "pal_compiled",
-      run_id,
-      pal: palManifest,
-      message: `✅ PAL compiled — ${palManifest.plan.skills.length} skills, ${palManifest.ambiguities.length} warnings`,
-      timestamp: new Date().toISOString(),
-    })}\n\n`;
-
-    const encoder = new TextEncoder();
-    const palStream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(palEvent));
-        controller.close();
-      },
-    });
-
-    // Concatenate PAL event + pipeline stream
-    const merged = mergeStreams(palStream, stream);
-
-    return new Response(merged, {
+    return result.toUIMessageStreamResponse({
       headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
         "X-ROSTR-Run-ID": run_id,
         "X-ROSTR-Agent": "epk-agent@2.0.0",
-        "X-ROSTR-PAL-Phase": "C",
+      },
+      // The SDK's default error message ("An error occurred") is a
+      // deliberately safe default — it doesn't leak internals to the client.
+      // Keep that same discipline here: name the likely cause class without
+      // echoing the raw provider error text.
+      onError: (error) => {
+        console.error("[EPK API] pipeline error:", error);
+        return "The AI model call failed — check that an API key is configured and the AI Gateway is reachable.";
       },
     });
   } catch (err) {
@@ -116,32 +95,8 @@ export async function GET() {
     },
     endpoints: {
       run: "POST /api/epk",
-      stream: "POST /api/epk/stream",
-      status: "GET /api/epk/status/:id",
       mcp: "/api/mcp",
     },
     outputs: ["html", "pdf", "reveal-js", "pptx", "presenton"],
-  });
-}
-
-// ─── Stream helpers ───────────────────────────────────────────────────────────
-
-function mergeStreams(...streams: ReadableStream[]): ReadableStream {
-  return new ReadableStream({
-    async start(controller) {
-      for (const stream of streams) {
-        const reader = stream.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            controller.enqueue(value);
-          }
-        } finally {
-          reader.releaseLock();
-        }
-      }
-      controller.close();
-    },
   });
 }

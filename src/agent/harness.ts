@@ -1,14 +1,9 @@
 // @ts-nocheck — Vercel AI SDK v7 tool() generics; runtime types are correct
-import { streamText, generateText, tool, createGateway } from "ai";
+import { streamText, generateText, tool, createGateway, stepCountIs } from "ai";
 
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import type {
-  EPKIntake,
-  EPKPipelineState,
-  EPKPipelineEvent,
-  ROSTRArtifact,
-} from "../types";
+import type { EPKIntake, ROSTRArtifact } from "../types";
 import { RunStore } from "./store";
 import type { TrackMetadata } from "./tools/extract-metadata";
 
@@ -238,39 +233,37 @@ function buildEpkTools(ctx: { runId: string; artistSlug: string; intake: EPKInta
 // ─── ROSTR-compatible agent harness ──────────────────────────────────────────
 
 export interface EPKAgentOptions {
-  onEvent?: (event: EPKPipelineEvent) => void;
-  onApprovalRequired?: (action: string) => Promise<boolean>;
+  /** Fires once the agent loop finishes (success or error) — for persistence
+   * side effects (ContextEngine), not for driving the response stream. */
+  onFinish?: (info: { run_id: string; artist_slug: string }) => void | Promise<void>;
 }
 
 /**
- * streamEPKAgent — main entry point for ROSTR runtime and API routes.
- * Returns an async generator of EPKPipelineEvents + a readable stream.
+ * runEPKAgent — main entry point for API routes and the MCP server.
+ *
+ * Returns the raw Vercel AI SDK `streamText` result instead of a hand-rolled
+ * SSE protocol. The caller (the API route) turns this into a response via
+ * `result.toUIMessageStreamResponse()` — the SDK's own client-side hooks
+ * (`@ai-sdk/react`'s `useChat`) then consume tool-call/tool-result state
+ * natively, which is what actually gives every pipeline step (format_inputs
+ * through render_epk) its own typed part in the UI message stream, instead
+ * of a bespoke event format only this app's own hand-written parser understood.
+ *
+ * `stopWhen: stepCountIs(15)` matters more than it looks: without an explicit
+ * stopWhen, the AI SDK defaults to a single step. This pipeline's system
+ * prompt instructs the model to call ~10 tools across several sequential
+ * turns (format_inputs, then the parallel extractors, then compile_data,
+ * generate_bio, render_epk) — without this, the agent loop would stop after
+ * the model's first turn and never reach compile_data or render_epk at all,
+ * even with a fully working model connection. This was never set before.
  */
-export async function streamEPKAgent(
-  intake: EPKIntake,
-  options: EPKAgentOptions = {}
-): Promise<{
-  stream: ReadableStream;
-  run_id: string;
-}> {
+export function runEPKAgent(intake: EPKIntake, options: EPKAgentOptions = {}) {
   const run_id = uuidv4();
   const artist_slug = intake.artist_name
     .toLowerCase()
     .replace(/\s+/g, "-")
     .replace(/[^a-z0-9-]/g, "");
 
-  const emit = (event: EPKPipelineEvent) => {
-    options.onEvent?.(event);
-  };
-
-  emit({
-    type: "progress",
-    message: `🎵 EPK Agent activated for ${intake.artist_name} [run: ${run_id}]`,
-    data: { run_id, artist_slug, template: intake.template || "general" },
-    timestamp: new Date().toISOString(),
-  });
-
-  // Build the system prompt from soul.md conventions
   const systemPrompt = buildSystemPrompt(intake);
 
   // One store per run — closed over by every tool below, so later steps
@@ -279,112 +272,18 @@ export async function streamEPKAgent(
   const store = new RunStore();
   const epkTools = buildEpkTools({ runId: run_id, artistSlug: artist_slug, intake, store });
 
-  // Run through Vercel AI SDK streamText with EPK tools
-  const { fullStream } = streamText({
+  const result = streamText({
     model: DEFAULT_MODEL,
     system: systemPrompt,
     prompt: buildUserPrompt(intake, run_id, artist_slug),
     tools: epkTools,
-    onStepFinish: ({ toolCalls, toolResults }) => {
-      toolCalls?.forEach((tc, i) => {
-        const result = toolResults?.[i];
-        emit({
-          type: result ? "skill_complete" : "skill_start",
-          skill: tc.toolName,
-          message: result
-            ? `✅ ${tc.toolName} complete`
-            : `▶️ Running ${tc.toolName}...`,
-          timestamp: new Date().toISOString(),
-        });
-      });
+    stopWhen: stepCountIs(15),
+    onFinish: async () => {
+      await options.onFinish?.({ run_id, artist_slug });
     },
   });
 
-  // Convert to a ReadableStream of SSE-formatted events
-  const stream = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder();
-
-      const sendSSE = (data: string) => {
-        controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-      };
-
-      try {
-        for await (const chunk of fullStream) {
-          if (chunk.type === "text-delta") {
-            sendSSE(
-              JSON.stringify({ type: "text", delta: (chunk as { textDelta?: string }).textDelta ?? "" })
-            );
-          } else if (chunk.type === "tool-call") {
-            sendSSE(
-              JSON.stringify({
-                type: "skill_start",
-                skill: chunk.toolName,
-                message: `▶️ Running ${chunk.toolName}...`,
-                timestamp: new Date().toISOString(),
-              })
-            );
-          } else if (chunk.type === "tool-result") {
-            // render_epk's output is the only tool result the front end actually
-            // needs to render the final EPK (epk.html content + output_urls) —
-            // forwarded here since there's no DB to persist it to and re-fetch
-            // from; everything else stays step-name-only to keep the stream lean.
-            const payload: Record<string, unknown> = {
-              type: "skill_complete",
-              skill: chunk.toolName,
-              timestamp: new Date().toISOString(),
-            };
-            if (chunk.toolName === "render_epk") {
-              payload.output = chunk.output;
-            }
-            sendSSE(JSON.stringify(payload));
-          } else if (chunk.type === "finish") {
-            sendSSE(
-              JSON.stringify({
-                type: "pipeline_complete",
-                message: `🎉 EPK complete for ${intake.artist_name}`,
-                run_id,
-                timestamp: new Date().toISOString(),
-              })
-            );
-          } else if (chunk.type === "error") {
-            // The AI SDK delivers a model/provider failure (e.g. no API key, or
-            // the Gateway unreachable) as an "error" chunk THROUGH the stream —
-            // it does not throw, so this previously fell through every branch
-            // above, did nothing, and the stream just closed silently. The
-            // client would sit on "Give us a minute" forever with no way to
-            // know the run had already failed.
-            const errorChunk = chunk as { type: "error"; error: unknown };
-            const message =
-              errorChunk.error instanceof Error
-                ? errorChunk.error.message
-                : typeof errorChunk.error === "string"
-                  ? errorChunk.error
-                  : "The AI model call failed — check DEFAULT_MODEL / AI_GATEWAY_API_KEY / ANTHROPIC_API_KEY and network access to the Gateway.";
-            sendSSE(
-              JSON.stringify({
-                type: "error",
-                message,
-                timestamp: new Date().toISOString(),
-              })
-            );
-          }
-        }
-      } catch (err) {
-        sendSSE(
-          JSON.stringify({
-            type: "error",
-            message: err instanceof Error ? err.message : "Pipeline error",
-            timestamp: new Date().toISOString(),
-          })
-        );
-      } finally {
-        controller.close();
-      }
-    },
-  });
-
-  return { stream, run_id };
+  return { result, run_id, artist_slug };
 }
 
 // ─── ROSTR-compliant system prompt (from soul.md) ────────────────────────────
